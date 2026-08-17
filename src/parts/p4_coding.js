@@ -1,5 +1,65 @@
 /* ============================================================
-   CODING SECTION — problems + pyodide runner + desk coach
+   p4_coding.js — part 4 of 6. The coding tab: problems, Python, and the coach.
+   ============================================================
+   Sections below, in order:
+     1. *_SETUP strings     Python dataset generators for the Data & ML problems
+     2. CODING_PROBLEMS     16 problems: 10 mode:"algo", 6 mode:"data"
+     3. Runtime             lazy Pyodide loader with CDN fallbacks
+     4. buildRunnerScript   generates the Python test harness
+     5. Coach               hints, regex review, live lint, offline KB, Claude API
+     6. Coding              the UI: problem list, editor, test results, drafts
+
+   PROBLEM SHAPE (full field table in README.md):
+     { id, mode, diff, title, desc, hints: [3], review: [{re, miss}],
+       setup?, starter, solution, tests: [{call, expected, show, label?}] }
+   `show: false` hides a test from the user but it still gates the pass. The
+   function name the tests call is inferred from `starter` with /def\s+(\w+)/,
+   so the starter signature is load-bearing — Coach.fnName() and the lint both
+   depend on it.
+
+   HOW A RUN WORKS. Runtime.init() injects pyodide.js from the first reachable
+   CDN (jsDelivr 0.26.4, then two cdnjs mirrors) and caches the interpreter;
+   data-mode problems additionally loadPackage(["numpy","pandas"]) once.
+   buildRunnerScript() then emits a Python program that execs the problem's
+   `setup` into a namespace `_g`, execs the user's code into that SAME
+   namespace, and evals each test's `call` and `expected` as expressions with
+   stdout redirected. Results come back as JSON.
+
+     Comparison is _deep_eq: math.isclose(rel_tol=1e-6, abs_tol=1e-9) on
+     numerics, recursive over lists/tuples/dicts, and bools compared exactly
+     so that True never equals 1.
+
+     Consequence of the shared namespace: the held-out truth arrays
+     (_PETS_TRUTH, _RENT_TRUTH) are in scope for user code, so the MAE bars
+     are defeatable by reading them. Accepted trade-off for a solo practice
+     tool — it is honor-system in the same way the reference solutions are.
+
+   DATASET DETERMINISM IS AN INVARIANT. The setup strings seed
+   np.random.default_rng(7) for pets, (11) for ticks, (21) for rent, and every
+   expected value in `tests` was computed from those exact streams. Changing a
+   seed, the order of generation calls, or a row count silently invalidates the
+   hard-coded expectations (ticks is checked against a literal
+   {'n_good': 470, 'vwap': 100.64}) and the MAE bars. Re-derive all of them by
+   RUNNING the reference solution if you touch a generator. The messiness is
+   deliberate and mirrors real screens: mixed-case categoricals, -1/0/-999
+   sentinels, NaNs, replayed duplicate rows, fat-fingered x100 prices.
+
+   THE COACH degrades in three layers, so it is useful with no network at all:
+     - lint()        real Python compile() through Pyodide once loaded, which
+                     yields true SyntaxError line numbers; before that, bracket
+                     balance checks. Debounced 900 ms on input.
+     - offlineReply  staged hints, the per-problem `review` regex checklist,
+                     pandas anti-pattern detection (iterrows, indexed row
+                     loops), and the KB table of syntax answers.
+     - claudeReply   optional user-supplied API key, held in memory only and
+                     never persisted, posting straight to api.anthropic.com
+                     with anthropic-dangerous-direct-browser-access. Any
+                     failure falls back to the offline coach with an
+                     explanation rather than breaking the panel.
+
+   EVERY NETWORK PATH HAS A GRACEFUL FAILURE MESSAGE and must keep one:
+   embedded and sandboxed previews block CDN scripts and package downloads
+   outright, and the app is expected to stay usable when they do.
    ============================================================ */
 const PETS_SETUP = `
 def _make_pets():

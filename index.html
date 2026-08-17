@@ -4,6 +4,31 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DeskPrep — Quant Interview Prep</title>
+<!--
+  ============================================================================
+  p1_head.html — part 1 of 6. HTML shell and the entire stylesheet.
+  ============================================================================
+  This is a FRAGMENT, not a standalone document: it opens <html>, <head>,
+  <style>, <body> and <script>, and p6_tail.html closes them. ./build.sh
+  concatenates p1 … p6 into index.html. Never edit index.html directly.
+
+  Contents, in order:
+    1. :root design tokens — dark palette, type stacks, radius. Every color in
+       the app comes from here; see the design system table in README.md.
+    2. App chrome — .topbar, nav tabs, main, .view (only .view.active shows).
+    3. Component CSS, grouped by the section that uses it and labeled with
+       banner comments: Roadmap, Question bank + modal, Coding, Trading floor,
+       answer checking, Progress, Desk Coach.
+    4. The markup: topbar with five tab buttons, five empty <section class=
+       "view"> containers that JS fills, and the question modal scrim.
+
+  The five <section> ids are the render targets — view-roadmap, view-bank,
+  view-coding, view-floor, view-progress. switchView() in p3 maps a tab's
+  data-view attribute to "view-" + name, so the two must stay in sync.
+
+  Dark theme only: <html data-theme="dark"> and color-scheme are both pinned,
+  so there is no light palette to keep in step.
+-->
 <style>
   :root {
     color-scheme: dark;
@@ -406,7 +431,42 @@
 <script>
 "use strict";
 /* ============================================================
-   DATA — topics, stages, questions, firms, fermi bank
+   p2_data.js — part 2 of 6. The content layer.
+   ============================================================
+   Pure data, no behavior. Everything the app knows about interview content
+   lives here, and every derived number in the UI (roadmap progress, topic
+   counts, skill scores, firm drills) is computed from these arrays — so
+   adding content here is all that is needed to grow the app.
+
+   Exports (top-level consts, shared with p3-p5 by concatenation order):
+     STAGES         4  staged tracks, ids s1-s4
+     TOPICS        12  topics, each pinned to a stage
+     QUESTIONS     78  the bank: 64 auto-graded + 14 discussion
+     FIRMS         10  playbooks with per-topic weight vectors
+     FERMI_MARKETS 10  settlement specs for the Fermi order-book game
+
+   Question shape (see the full field table in README.md):
+     { id, topic, diff: 1|2|3, firms: [...], title, prompt, hint, solution,
+       ans?: { t: "n"|"f", v, rel?, abs?, factor?, pct?, label } }
+   Omitting `ans` makes it a discussion question, graded only by self-rating.
+
+   Referential integrity is not enforced at runtime — `topic` must match a
+   TOPICS id and every entry in `firms` must match a FIRMS id, or the bank
+   row will throw when it tries to render the badge. Ids are also the
+   persistence keys, so never renumber an existing question.
+
+   Difficulty calibration is deliberate and tighter than most banks: the
+   classics (two ropes, the 99%-accurate test, coupon collector, 25 horses)
+   are easy or medium here. diff:3 is reserved for genuinely hard material —
+   100 prisoners, ABRACADABRA via optional stopping, attenuation bias,
+   Gaussian orthant probabilities. Current mix: 38 easy / 29 medium / 11 hard.
+
+   House style for solutions: derive the answer, then close with the trading
+   desk translation of the idea — that last paragraph is the point of the
+   bank, not the number.
+
+   Note the QUESTIONS.push(...) block at the bottom; later additions were
+   appended there rather than threaded into the literal above.
    ============================================================ */
 
 const STAGES = [
@@ -844,7 +904,50 @@ QUESTIONS.push(
   solution:"Path 1: ~11–12B shares/day trade across US venues; average traded price ~$50–60 → ~$600B/day.\nPath 2: US market cap ~$55–60T; annual turnover very roughly 2–3× ÷ 250 days → $450–700B/day. Paths agree → tradeable estimate: ~$500–700B.\nGarnish for the interviewer: ~40–50% of that is off-exchange (dark/internalized), SPY alone does ~$30–40B, and volume roughly doubles on index-rebalance and OpEx days. Knowing the market's daily notional cold is table stakes for market-structure conversations at CitSec/Tower." }
 );
 /* ============================================================
-   APP STATE + PERSISTENCE + SHELL
+   p3_app.js — part 3 of 6. State, persistence, and three of the five views.
+   ============================================================
+   Sections below, in order:
+     1. `state` + `Store`      the single state object and its localStorage wrapper
+     2. helpers                $/$$ selectors, esc(), formatters, solved predicates
+     3. tab router             switchView() — the only way views change
+     4. answer checking        parseAnswer() / checkAnswer() / fmtExpected()
+     5. Roadmap view           stages, topic cards, firm playbooks
+     6. Question Bank view     filters, list, and the question modal
+     7. Progress view          skill scores, recommendations, review queue, I/O
+
+   RENDERING MODEL. No framework and no reactivity: each view owns a render
+   function that rebuilds its subtree from a template string and re-binds its
+   listeners. Mutating `state` does nothing visible until you call the render
+   function again — so every mutation site ends with an explicit
+   `Store.save()` and the relevant re-render. All interpolated content goes
+   through esc(), which covers & < > " (single quotes are not escaped, which
+   is safe only because every attribute in this file is double-quoted).
+
+   PERSISTENCE. `Store` keys off "deskprep_progress_v1" and feature-detects
+   localStorage in a try/catch at definition time (`Store.ok`). Sandboxed
+   previews block storage entirely, so every call site must tolerate ok ===
+   false; the Progress tab surfaces a banner explaining the degraded mode.
+   Bump the KEY string only alongside a migration, since old blobs are read
+   with Object.assign and unknown fields are ignored.
+
+   ANSWER CHECKING is the subtle part. parseAnswer() normalizes currency
+   symbols, thousands separators, unicode minus, percents, k/M/B/T suffixes
+   and fractions into a number plus a "was a percent" flag. checkAnswer()
+   then builds a candidate list — the parsed value, plus value/100 when the
+   spec is `pct` and the user typed a bare number — and accepts if any
+   candidate lands in tolerance. Verdicts are ok | near | wrong | invalid;
+   `near` exists so that a rounding slip reads differently from a wrong
+   method. Tolerance rules, which the question data depends on:
+     - t:"f"       within spec.factor either direction; 2x factor => near
+     - integer v   exact, with a near band of max(1, 2%)
+     - otherwise   max(abs, rel * |v|) with rel defaulting to 0.01
+
+   SCORING. qSolved() is true if the checker was ever satisfied OR the user
+   self-rated Good/Easy, so the bank is honor-system by design. topicSkill()
+   blends both signals — first-try 1.0, eventual 0.7, miss 0.12, ratings
+   0.1/0.45/0.85/1.0 — and takes the max when both exist. It returns null for
+   untouched topics, which the Progress view renders separately rather than
+   as a zero, so that "not tried" never looks like "failed".
    ============================================================ */
 const state = {
   ratings: {},          // qid -> 1(again) 2(hard) 3(good) 4(easy)
@@ -1435,7 +1538,67 @@ function renderProgress() {
   });
 }
 /* ============================================================
-   CODING SECTION — problems + pyodide runner + desk coach
+   p4_coding.js — part 4 of 6. The coding tab: problems, Python, and the coach.
+   ============================================================
+   Sections below, in order:
+     1. *_SETUP strings     Python dataset generators for the Data & ML problems
+     2. CODING_PROBLEMS     16 problems: 10 mode:"algo", 6 mode:"data"
+     3. Runtime             lazy Pyodide loader with CDN fallbacks
+     4. buildRunnerScript   generates the Python test harness
+     5. Coach               hints, regex review, live lint, offline KB, Claude API
+     6. Coding              the UI: problem list, editor, test results, drafts
+
+   PROBLEM SHAPE (full field table in README.md):
+     { id, mode, diff, title, desc, hints: [3], review: [{re, miss}],
+       setup?, starter, solution, tests: [{call, expected, show, label?}] }
+   `show: false` hides a test from the user but it still gates the pass. The
+   function name the tests call is inferred from `starter` with /def\s+(\w+)/,
+   so the starter signature is load-bearing — Coach.fnName() and the lint both
+   depend on it.
+
+   HOW A RUN WORKS. Runtime.init() injects pyodide.js from the first reachable
+   CDN (jsDelivr 0.26.4, then two cdnjs mirrors) and caches the interpreter;
+   data-mode problems additionally loadPackage(["numpy","pandas"]) once.
+   buildRunnerScript() then emits a Python program that execs the problem's
+   `setup` into a namespace `_g`, execs the user's code into that SAME
+   namespace, and evals each test's `call` and `expected` as expressions with
+   stdout redirected. Results come back as JSON.
+
+     Comparison is _deep_eq: math.isclose(rel_tol=1e-6, abs_tol=1e-9) on
+     numerics, recursive over lists/tuples/dicts, and bools compared exactly
+     so that True never equals 1.
+
+     Consequence of the shared namespace: the held-out truth arrays
+     (_PETS_TRUTH, _RENT_TRUTH) are in scope for user code, so the MAE bars
+     are defeatable by reading them. Accepted trade-off for a solo practice
+     tool — it is honor-system in the same way the reference solutions are.
+
+   DATASET DETERMINISM IS AN INVARIANT. The setup strings seed
+   np.random.default_rng(7) for pets, (11) for ticks, (21) for rent, and every
+   expected value in `tests` was computed from those exact streams. Changing a
+   seed, the order of generation calls, or a row count silently invalidates the
+   hard-coded expectations (ticks is checked against a literal
+   {'n_good': 470, 'vwap': 100.64}) and the MAE bars. Re-derive all of them by
+   RUNNING the reference solution if you touch a generator. The messiness is
+   deliberate and mirrors real screens: mixed-case categoricals, -1/0/-999
+   sentinels, NaNs, replayed duplicate rows, fat-fingered x100 prices.
+
+   THE COACH degrades in three layers, so it is useful with no network at all:
+     - lint()        real Python compile() through Pyodide once loaded, which
+                     yields true SyntaxError line numbers; before that, bracket
+                     balance checks. Debounced 900 ms on input.
+     - offlineReply  staged hints, the per-problem `review` regex checklist,
+                     pandas anti-pattern detection (iterrows, indexed row
+                     loops), and the KB table of syntax answers.
+     - claudeReply   optional user-supplied API key, held in memory only and
+                     never persisted, posting straight to api.anthropic.com
+                     with anthropic-dangerous-direct-browser-access. Any
+                     failure falls back to the offline coach with an
+                     explanation rather than breaking the panel.
+
+   EVERY NETWORK PATH HAS A GRACEFUL FAILURE MESSAGE and must keep one:
+   embedded and sandboxed previews block CDN scripts and package downloads
+   outright, and the app is expected to stay usable when they do.
    ============================================================ */
 const PETS_SETUP = `
 def _make_pets():
@@ -2551,7 +2714,56 @@ const Coding = {
   },
 };
 /* ============================================================
-   TRADING FLOOR — three games
+   p5_games.js — part 5 of 6. The Trading Floor, plus the app's boot code.
+   ============================================================
+   Sections below, in order:
+     1. helpers      randn() Box-Muller, clamp, pick, setupCanvas (DPR-aware)
+     2. Floor        the game hub and the timer registry
+     3. DiceGame     market making on the sum of hidden dice
+     4. VolGame      fitting a vol smile against noisy and stale quotes
+     5. FermiGame    a live limit order book on an estimation question
+     6. BOOT         the code that actually starts the app — see bottom
+
+   BOOT ORDER MATTERS. The last lines of this file are the app's entry point,
+   and they run only because every const in p2-p4 has already been evaluated
+   by then. switchView is wrapped there to call Floor.stopAll() on any
+   navigation away from the floor, which is what prevents a game's interval
+   callbacks from firing into a DOM that no longer exists.
+
+   TIMER DISCIPLINE. Games are driven by setTimeout/setInterval, never rAF.
+   Always schedule through Floor.after()/Floor.every() so the handle lands in
+   Floor.timers and stopAll() can cancel it; a bare setTimeout here leaks a
+   callback that will throw on a destroyed view.
+
+   SHARED DESIGN. All three games mix INFORMED and NOISE counterparties, and
+   all three decompose the player's P&L along that split at settlement,
+   because the lesson is the decomposition rather than the total: a market
+   maker's profit is noise income minus the informed tax. Bots value the
+   contract, compare that value to the player's quotes, and trade when they
+   see edge — the player is always the passive side except in FermiGame.
+   Settlement P&L flows through addPnl() into the session tracker in p3.
+
+   Per-game notes:
+     DiceGame   truth = sum of n hidden dice; model fair value is revealed
+                dice + 3.5 per unrevealed one. 3 rounds with progressive
+                reveals, ~35% of arrivals informed. Quote size caps fills per
+                side. Settlement reports markouts vs informed and vs noise.
+     VolGame    a hidden true smile (base + skew*m + curv*m^2) with per-strike
+                noise and, above level 1, deliberately STALE quotes. The
+                player drags mid-vols on canvas and sets one spread; 20 orders
+                then arrive and each fill is marked to truth. Penalties fire
+                on negative butterflies and adjacent-strike cliffs — the same
+                convexity and monotonicity checks a real fitter runs.
+     FermiGame  a genuine continuous double-auction: submit() crosses against
+                resting orders best-price-first, executes at the resting
+                price, and rests any remainder. 10 bots in 5 styles
+                (informed / fund / anchored / momentum / noise) with per-style
+                mean-reversion kappa toward truth requote every ~650 ms.
+                Player gets limit and market orders on both sides. Settles at
+                the researched answer from FERMI_MARKETS after 3 minutes.
+
+   Charts are hand-rolled Canvas 2D. setupCanvas() handles devicePixelRatio,
+   so draw in CSS pixels and let it scale; colors come from the p1 palette.
    ============================================================ */
 function randn() {
   let u = 0, v = 0;

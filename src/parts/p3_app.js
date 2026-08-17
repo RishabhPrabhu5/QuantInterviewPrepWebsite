@@ -1,5 +1,48 @@
 /* ============================================================
-   APP STATE + PERSISTENCE + SHELL
+   p3_app.js — part 3 of 6. State, persistence, and three of the five views.
+   ============================================================
+   Sections below, in order:
+     1. `state` + `Store`      the single state object and its localStorage wrapper
+     2. helpers                $/$$ selectors, esc(), formatters, solved predicates
+     3. tab router             switchView() — the only way views change
+     4. answer checking        parseAnswer() / checkAnswer() / fmtExpected()
+     5. Roadmap view           stages, topic cards, firm playbooks
+     6. Question Bank view     filters, list, and the question modal
+     7. Progress view          skill scores, recommendations, review queue, I/O
+
+   RENDERING MODEL. No framework and no reactivity: each view owns a render
+   function that rebuilds its subtree from a template string and re-binds its
+   listeners. Mutating `state` does nothing visible until you call the render
+   function again — so every mutation site ends with an explicit
+   `Store.save()` and the relevant re-render. All interpolated content goes
+   through esc(), which covers & < > " (single quotes are not escaped, which
+   is safe only because every attribute in this file is double-quoted).
+
+   PERSISTENCE. `Store` keys off "deskprep_progress_v1" and feature-detects
+   localStorage in a try/catch at definition time (`Store.ok`). Sandboxed
+   previews block storage entirely, so every call site must tolerate ok ===
+   false; the Progress tab surfaces a banner explaining the degraded mode.
+   Bump the KEY string only alongside a migration, since old blobs are read
+   with Object.assign and unknown fields are ignored.
+
+   ANSWER CHECKING is the subtle part. parseAnswer() normalizes currency
+   symbols, thousands separators, unicode minus, percents, k/M/B/T suffixes
+   and fractions into a number plus a "was a percent" flag. checkAnswer()
+   then builds a candidate list — the parsed value, plus value/100 when the
+   spec is `pct` and the user typed a bare number — and accepts if any
+   candidate lands in tolerance. Verdicts are ok | near | wrong | invalid;
+   `near` exists so that a rounding slip reads differently from a wrong
+   method. Tolerance rules, which the question data depends on:
+     - t:"f"       within spec.factor either direction; 2x factor => near
+     - integer v   exact, with a near band of max(1, 2%)
+     - otherwise   max(abs, rel * |v|) with rel defaulting to 0.01
+
+   SCORING. qSolved() is true if the checker was ever satisfied OR the user
+   self-rated Good/Easy, so the bank is honor-system by design. topicSkill()
+   blends both signals — first-try 1.0, eventual 0.7, miss 0.12, ratings
+   0.1/0.45/0.85/1.0 — and takes the max when both exist. It returns null for
+   untouched topics, which the Progress view renders separately rather than
+   as a zero, so that "not tried" never looks like "failed".
    ============================================================ */
 const state = {
   ratings: {},          // qid -> 1(again) 2(hard) 3(good) 4(easy)

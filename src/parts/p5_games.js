@@ -1,5 +1,54 @@
 /* ============================================================
-   TRADING FLOOR — three games
+   p5_games.js — part 5 of 6. The Trading Floor, plus the app's boot code.
+   ============================================================
+   Sections below, in order:
+     1. helpers      randn() Box-Muller, clamp, pick, setupCanvas (DPR-aware)
+     2. Floor        the game hub and the timer registry
+     3. DiceGame     market making on the sum of hidden dice
+     4. VolGame      fitting a vol smile against noisy and stale quotes
+     5. FermiGame    a live limit order book on an estimation question
+     6. BOOT         the code that actually starts the app — see bottom
+
+   BOOT ORDER MATTERS. The last lines of this file are the app's entry point,
+   and they run only because every const in p2-p4 has already been evaluated
+   by then. switchView is wrapped there to call Floor.stopAll() on any
+   navigation away from the floor, which is what prevents a game's interval
+   callbacks from firing into a DOM that no longer exists.
+
+   TIMER DISCIPLINE. Games are driven by setTimeout/setInterval, never rAF.
+   Always schedule through Floor.after()/Floor.every() so the handle lands in
+   Floor.timers and stopAll() can cancel it; a bare setTimeout here leaks a
+   callback that will throw on a destroyed view.
+
+   SHARED DESIGN. All three games mix INFORMED and NOISE counterparties, and
+   all three decompose the player's P&L along that split at settlement,
+   because the lesson is the decomposition rather than the total: a market
+   maker's profit is noise income minus the informed tax. Bots value the
+   contract, compare that value to the player's quotes, and trade when they
+   see edge — the player is always the passive side except in FermiGame.
+   Settlement P&L flows through addPnl() into the session tracker in p3.
+
+   Per-game notes:
+     DiceGame   truth = sum of n hidden dice; model fair value is revealed
+                dice + 3.5 per unrevealed one. 3 rounds with progressive
+                reveals, ~35% of arrivals informed. Quote size caps fills per
+                side. Settlement reports markouts vs informed and vs noise.
+     VolGame    a hidden true smile (base + skew*m + curv*m^2) with per-strike
+                noise and, above level 1, deliberately STALE quotes. The
+                player drags mid-vols on canvas and sets one spread; 20 orders
+                then arrive and each fill is marked to truth. Penalties fire
+                on negative butterflies and adjacent-strike cliffs — the same
+                convexity and monotonicity checks a real fitter runs.
+     FermiGame  a genuine continuous double-auction: submit() crosses against
+                resting orders best-price-first, executes at the resting
+                price, and rests any remainder. 10 bots in 5 styles
+                (informed / fund / anchored / momentum / noise) with per-style
+                mean-reversion kappa toward truth requote every ~650 ms.
+                Player gets limit and market orders on both sides. Settles at
+                the researched answer from FERMI_MARKETS after 3 minutes.
+
+   Charts are hand-rolled Canvas 2D. setupCanvas() handles devicePixelRatio,
+   so draw in CSS pixels and let it scale; colors come from the p1 palette.
    ============================================================ */
 function randn() {
   let u = 0, v = 0;

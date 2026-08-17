@@ -1,5 +1,40 @@
 /* ============================================================
-   DATA — topics, stages, questions, firms, fermi bank
+   p2_data.js — part 2 of 6. The content layer.
+   ============================================================
+   Pure data, no behavior. Everything the app knows about interview content
+   lives here, and every derived number in the UI (roadmap progress, topic
+   counts, skill scores, firm drills) is computed from these arrays — so
+   adding content here is all that is needed to grow the app.
+
+   Exports (top-level consts, shared with p3-p5 by concatenation order):
+     STAGES         4  staged tracks, ids s1-s4
+     TOPICS        12  topics, each pinned to a stage
+     QUESTIONS     78  the bank: 64 auto-graded + 14 discussion
+     FIRMS         10  playbooks with per-topic weight vectors
+     FERMI_MARKETS 10  settlement specs for the Fermi order-book game
+
+   Question shape (see the full field table in README.md):
+     { id, topic, diff: 1|2|3, firms: [...], title, prompt, hint, solution,
+       ans?: { t: "n"|"f", v, rel?, abs?, factor?, pct?, label } }
+   Omitting `ans` makes it a discussion question, graded only by self-rating.
+
+   Referential integrity is not enforced at runtime — `topic` must match a
+   TOPICS id and every entry in `firms` must match a FIRMS id, or the bank
+   row will throw when it tries to render the badge. Ids are also the
+   persistence keys, so never renumber an existing question.
+
+   Difficulty calibration is deliberate and tighter than most banks: the
+   classics (two ropes, the 99%-accurate test, coupon collector, 25 horses)
+   are easy or medium here. diff:3 is reserved for genuinely hard material —
+   100 prisoners, ABRACADABRA via optional stopping, attenuation bias,
+   Gaussian orthant probabilities. Current mix: 38 easy / 29 medium / 11 hard.
+
+   House style for solutions: derive the answer, then close with the trading
+   desk translation of the idea — that last paragraph is the point of the
+   bank, not the number.
+
+   Note the QUESTIONS.push(...) block at the bottom; later additions were
+   appended there rather than threaded into the literal above.
    ============================================================ */
 
 const STAGES = [

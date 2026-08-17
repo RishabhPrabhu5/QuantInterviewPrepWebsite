@@ -4,6 +4,31 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DeskPrep — Quant Interview Prep</title>
+<!--
+  ============================================================================
+  p1_head.html — part 1 of 6. HTML shell and the entire stylesheet.
+  ============================================================================
+  This is a FRAGMENT, not a standalone document: it opens <html>, <head>,
+  <style>, <body> and <script>, and p6_tail.html closes them. ./build.sh
+  concatenates p1 … p6 into index.html. Never edit index.html directly.
+
+  Contents, in order:
+    1. :root design tokens — dark palette, type stacks, radius. Every color in
+       the app comes from here; see the design system table in README.md.
+    2. App chrome — .topbar, nav tabs, main, .view (only .view.active shows).
+    3. Component CSS, grouped by the section that uses it and labeled with
+       banner comments: Roadmap, Question bank + modal, Coding, Trading floor,
+       answer checking, Progress, Desk Coach.
+    4. The markup: topbar with five tab buttons, five empty <section class=
+       "view"> containers that JS fills, and the question modal scrim.
+
+  The five <section> ids are the render targets — view-roadmap, view-bank,
+  view-coding, view-floor, view-progress. switchView() in p3 maps a tab's
+  data-view attribute to "view-" + name, so the two must stay in sync.
+
+  Dark theme only: <html data-theme="dark"> and color-scheme are both pinned,
+  so there is no light palette to keep in step.
+-->
 <style>
   :root {
     color-scheme: dark;
