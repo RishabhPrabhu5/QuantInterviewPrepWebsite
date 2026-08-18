@@ -367,6 +367,26 @@
   .skill-track { height: 8px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
   .skill-fill { height: 100%; border-radius: 4px; background: var(--s1); }
   .skill-row .pct { font: 600 12px var(--mono); color: var(--ink-muted); }
+  .skill-fill.voice { background: var(--s3); }
+  .voice-row { grid-template-columns: 190px 1fr 78px 78px; }
+  @media (max-width: 800px) { .voice-row { grid-template-columns: 120px 1fr 62px 62px; } }
+  .voice-row .pct.cold { text-align: right; }
+  .voice-row .pct.untested { color: var(--warning); }
+  .voice-io { width: 100%; min-height: 108px; resize: vertical; margin-top: 8px;
+    background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 11px; font: 500 12px var(--mono); line-height: 1.5; }
+  .voice-io:focus { outline: none; border-color: var(--s3); }
+  .voice-msg { margin-top: 8px; font-size: 12.5px; min-height: 17px; }
+  .voice-msg.bad { color: var(--critical); }
+  .voice-msg.good { color: var(--good); }
+  .voice-msg.warn { color: var(--warning); }
+  .sess-row { display: flex; gap: 10px; align-items: baseline; font-size: 12.5px;
+    color: var(--ink-2); padding: 5px 0; border-bottom: 1px solid var(--grid); }
+  .sess-row:last-child { border-bottom: 0; }
+  .sess-row .when { color: var(--ink-muted); font-family: var(--mono); font-size: 11.5px; min-width: 70px; }
+  .sess-row .rm { margin-left: auto; cursor: pointer; color: var(--ink-muted); border: 0;
+    background: none; font-size: 14px; line-height: 1; padding: 0 4px; }
+  .sess-row .rm:hover { color: var(--critical); }
   .queue-row {
     display: flex; justify-content: space-between; align-items: center; gap: 10px;
     background: var(--surface); border: 1px solid var(--border); border-radius: 9px;
@@ -944,7 +964,8 @@ QUESTIONS.push(
      4. answer checking        parseAnswer() / checkAnswer() / fmtExpected()
      5. Roadmap view           stages, topic cards, firm playbooks
      6. Question Bank view     filters, list, and the question modal
-     7. Progress view          skill scores, recommendations, review queue, I/O
+     7. voice sessions         receipt schema, parser, and the parallel score
+     8. Progress view          skill scores, recommendations, review queue, I/O
 
    RENDERING MODEL. No framework and no reactivity: each view owns a render
    function that rebuilds its subtree from a template string and re-binds its
@@ -960,6 +981,17 @@ QUESTIONS.push(
    false; the Progress tab surfaces a banner explaining the degraded mode.
    Bump the KEY string only alongside a migration, since old blobs are read
    with Object.assign and unknown fields are ignored.
+
+   VOICE SESSIONS come from spoken mocks held outside this app, so they cross
+   the gap as a receipt: one JSON blob per session, pasted into the Progress
+   tab. parseVoiceReceipt() is deliberately tolerant (finds the first {...} in
+   fenced or prose-wrapped text) but strict on content — an unknown topic id
+   or outcome rejects the whole receipt rather than silently dropping a skill.
+   Sessions merge by id, so re-pasting a corrected receipt updates in place.
+   voiceSkill() is a SECOND score and never feeds topicSkill(): what you can
+   talk through with a human is not what you can answer cold, and merging the
+   two would hide that gap. The Progress tab prints them side by side and
+   calls out topics logged in voice but never tested here.
 
    ANSWER CHECKING is the subtle part. parseAnswer() normalizes currency
    symbols, thousands separators, unicode minus, percents, k/M/B/T suffixes
@@ -986,7 +1018,8 @@ const state = {
   codingStatus: {},     // pid -> 'passed' | 'attempted'
   codingAtt: {},        // pid -> run count
   drillBests: {},       // "<drill>:<mode>" -> {score}   (timed drills, p5b)
-  history: [],          // [{t, kind:'q'|'code', id, ok}]
+  voiceSessions: [],    // [{id, t, source, minutes, skills:[{topic,label,outcome,note}]}]
+  history: [],          // [{t, kind:'q'|'code'|'drill'|'voice', id, ok}]
   pnlTotal: 0,
   view: "roadmap",
   bankFilters: { topic: "all", firm: "all", diff: "all", status: "all" },
@@ -1001,6 +1034,7 @@ const Store = {
       localStorage.setItem(this.KEY, JSON.stringify({
         ratings: state.ratings, qstats: state.qstats, codingStatus: state.codingStatus,
         codingAtt: state.codingAtt, drillBests: state.drillBests,
+        voiceSessions: state.voiceSessions,
         history: state.history.slice(-200), pnlTotal: state.pnlTotal,
         drafts: (typeof Coding !== "undefined") ? Coding.drafts : {},
       }));
@@ -1016,6 +1050,7 @@ const Store = {
       Object.assign(state.codingStatus, d.codingStatus || {});
       Object.assign(state.codingAtt, d.codingAtt || {});
       Object.assign(state.drillBests, d.drillBests || {});
+      state.voiceSessions = d.voiceSessions || [];
       state.history = d.history || [];
       state.pnlTotal = d.pnlTotal || 0;
       this._drafts = d.drafts || {};
@@ -1025,6 +1060,7 @@ const Store = {
     const blob = new Blob([JSON.stringify({
       ratings: state.ratings, qstats: state.qstats, codingStatus: state.codingStatus,
       codingAtt: state.codingAtt, drillBests: state.drillBests,
+      voiceSessions: state.voiceSessions,
       history: state.history, pnlTotal: state.pnlTotal,
       drafts: (typeof Coding !== "undefined") ? Coding.drafts : {}, exported: new Date().toISOString(),
     }, null, 1)], { type: "application/json" });
@@ -1044,6 +1080,7 @@ const Store = {
         Object.assign(state.codingStatus, d.codingStatus || {});
         Object.assign(state.codingAtt, d.codingAtt || {});
         Object.assign(state.drillBests, d.drillBests || {});
+        if (d.voiceSessions) d.voiceSessions.forEach(v => mergeVoiceSession(v));
         state.history = d.history || state.history;
         state.pnlTotal = d.pnlTotal ?? state.pnlTotal;
         if (d.drafts && typeof Coding !== "undefined") Object.assign(Coding.drafts, d.drafts);
@@ -1055,6 +1092,7 @@ const Store = {
   reset() {
     state.ratings = {}; state.qstats = {}; state.codingStatus = {}; state.codingAtt = {};
     state.drillBests = {}; state.history = []; state.pnlTotal = 0;
+    state.voiceSessions = [];
     if (typeof Coding !== "undefined") Coding.drafts = {};
     if (this.ok) try { localStorage.removeItem(this.KEY); } catch (e) {}
   },
@@ -1430,6 +1468,111 @@ function topicSkill(tid) {
   return { score: n ? sum / n : null, attempted, total: qs.length };
 }
 
+/* ---- Voice sessions -------------------------------------------------------
+   Spoken mock interviews happen outside this file (and outside this app), so
+   they cross the gap as a "receipt": one JSON blob the interviewer emits at
+   the end of a session, which the Progress tab ingests. Deliberately kept as
+   a SECOND, parallel signal — voiceSkill() never feeds topicSkill(), because
+   what you can talk through with a human is not what you can answer cold, and
+   collapsing the two would hide exactly the gap worth seeing.
+   Outcome weights mirror the bank's: unaided 1.0 down to a miss at 0.12.  */
+const VOICE_OUTCOMES = {
+  solid:    { w: 1.0,  label: "Solid",    hint: "answered unaided" },
+  prompted: { w: 0.7,  label: "Prompted", hint: "got there with hints" },
+  shaky:    { w: 0.45, label: "Shaky",    hint: "partial or slow" },
+  learned:  { w: 0.3,  label: "Learned",  hint: "newly taught, untested" },
+  missed:   { w: 0.12, label: "Missed",   hint: "couldn't do it" },
+};
+
+/* Paste-into-the-voice-chat contract. Kept here so the site is the single
+   source of truth for the schema it parses. */
+const VOICE_PROMPT = [
+  "At the end of every session, output a JSON block in exactly this shape and nothing else inside it:",
+  "",
+  '{"deskprep_voice_session":1,',
+  ' "id":"js-YYYY-MM-DD-1",',
+  ' "date":"YYYY-MM-DD",',
+  ' "source":"jane-street-voice",',
+  ' "minutes":30,',
+  ' "skills":[',
+  '   {"topic":"prob2","label":"linearity of expectation","outcome":"solid","note":"one line of context"}',
+  " ]}",
+  "",
+  "topic must be exactly one of: " + TOPICS.map(t => t.id).join(", "),
+  "outcome must be exactly one of:",
+  ...Object.keys(VOICE_OUTCOMES).map(k => "  " + k + " = " + VOICE_OUTCOMES[k].hint),
+  "",
+  "One entry per distinct skill exercised. Keep label under 40 characters.",
+  "Give each session a unique id; re-emitting the same id overwrites that session rather than adding a duplicate.",
+].join("\n");
+
+/* Tolerant on the way in: the receipt is copied out of a chat, so it may
+   arrive fenced, quoted, or with prose wrapped around it. */
+function parseVoiceReceipt(text) {
+  const errors = [], warnings = [];
+  const raw = String(text || "").trim();
+  if (!raw) return { ok: false, errors: ["Nothing pasted."], warnings };
+  const a = raw.indexOf("{"), b = raw.lastIndexOf("}");
+  if (a < 0 || b <= a) return { ok: false, errors: ["No JSON object found in the pasted text."], warnings };
+  let d;
+  try { d = JSON.parse(raw.slice(a, b + 1)); }
+  catch (e) { return { ok: false, errors: ["That isn't valid JSON — " + e.message], warnings }; }
+
+  if (!Array.isArray(d.skills) || !d.skills.length)
+    return { ok: false, errors: ["Receipt has no `skills` array — nothing to record."], warnings };
+
+  const skills = [];
+  d.skills.forEach((sk, i) => {
+    const where = "skill " + (i + 1);
+    if (!sk || typeof sk !== "object") { errors.push(where + " is not an object."); return; }
+    const topic = String(sk.topic || "").trim();
+    const outcome = String(sk.outcome || "").trim().toLowerCase();
+    if (!TOPICS.some(t => t.id === topic)) { errors.push(where + ': unknown topic "' + topic + '".'); return; }
+    if (!VOICE_OUTCOMES[outcome]) { errors.push(where + ': unknown outcome "' + outcome + '".'); return; }
+    const label = String(sk.label || "").trim().slice(0, 80);
+    if (!label) warnings.push(where + " has no label.");
+    skills.push({ topic, outcome, label: label || "(unlabelled)", note: String(sk.note || "").trim().slice(0, 240) });
+  });
+  if (errors.length) return { ok: false, errors, warnings };
+
+  const parsed = Date.parse(String(d.date || "") + "T12:00:00");
+  const session = {
+    id: String(d.id || "").trim() || ("voice-" + Date.now()),
+    t: isNaN(parsed) ? Date.now() : parsed,
+    date: String(d.date || "").trim(),
+    source: String(d.source || "voice").trim().slice(0, 40),
+    minutes: Number(d.minutes) > 0 ? Math.round(Number(d.minutes)) : null,
+    skills,
+  };
+  return { ok: true, session, errors, warnings };
+}
+
+/* Replace-by-id, so re-importing a corrected receipt updates in place. */
+function mergeVoiceSession(v) {
+  if (!v || !v.id || !Array.isArray(v.skills)) return false;
+  const i = state.voiceSessions.findIndex(x => x.id === v.id);
+  const replaced = i >= 0;
+  if (replaced) state.voiceSessions[i] = v; else state.voiceSessions.push(v);
+  state.voiceSessions.sort((x, y) => x.t - y.t);
+  return replaced;
+}
+
+function voiceSkill(tid) {
+  let sum = 0, n = 0, last = 0;
+  const labels = [];
+  for (const sess of state.voiceSessions) {
+    for (const sk of sess.skills) {
+      if (sk.topic !== tid) continue;
+      const o = VOICE_OUTCOMES[sk.outcome];
+      if (!o) continue;
+      sum += o.w; n++;
+      if (sess.t > last) last = sess.t;
+      if (labels.length < 6 && !labels.includes(sk.label)) labels.push(sk.label);
+    }
+  }
+  return { score: n ? sum / n : null, count: n, last, labels };
+}
+
 function relTime(t) {
   const d = Date.now() - t;
   if (d < 60e3) return "just now";
@@ -1454,6 +1597,13 @@ function renderProgress() {
   };
   const algo = codeByMode("algo"), data = codeByMode("data");
   const recent = state.history.slice(-12).reverse();
+  const voice = TOPICS.map(t => ({ t, v: voiceSkill(t.id), cold: topicSkill(t.id) }))
+                      .filter(r => r.v.score !== null)
+                      .sort((a, b) => a.v.score - b.v.score);
+  const voiceCount = state.voiceSessions.reduce((n, s2) => n + s2.skills.length, 0);
+  const voiceLast = state.voiceSessions.length ? state.voiceSessions[state.voiceSessions.length - 1].t : 0;
+  // Talked through it but never tested it cold — the gap the split scoring exists to surface.
+  const untested = voice.filter(r => r.cold.attempted === 0);
 
   el.innerHTML = `
     <h1>Progress</h1>
@@ -1487,11 +1637,58 @@ function renderProgress() {
         </div>
 
         <div class="card mt16">
+          <h2>Voice sessions</h2>
+          <p class="small muted">Skills logged from spoken mocks, scored separately from the bank. What you can talk through with a human isn't what you can answer cold — the second column is the same topic tested here.</p>
+          <div class="row mt12" style="gap:12px">
+            <div class="stat-tile"><div class="k">Sessions</div><div class="v">${state.voiceSessions.length}</div></div>
+            <div class="stat-tile"><div class="k">Skills logged</div><div class="v">${voiceCount}</div></div>
+            <div class="stat-tile"><div class="k">Last session</div><div class="v">${voiceLast ? relTime(voiceLast) : "—"}</div></div>
+          </div>
+          ${voice.length ? `
+            <div class="skill-rows">
+              <div class="skill-row voice-row" style="margin-bottom:-2px">
+                <span class="small muted"></span><span></span>
+                <span class="small muted" style="font-size:10.5px; letter-spacing:.6px; text-transform:uppercase">voice</span>
+                <span class="small muted cold" style="font-size:10.5px; letter-spacing:.6px; text-transform:uppercase; text-align:right">tested</span>
+              </div>
+              ${voice.map(r => `
+                <div class="skill-row voice-row" title="${esc(r.v.labels.join(" · "))}">
+                  <span class="nm">${r.t.icon} ${esc(r.t.name.split("·")[0].trim())}</span>
+                  <div class="skill-track"><div class="skill-fill voice" style="width:${Math.round(r.v.score * 100)}%"></div></div>
+                  <span class="pct">${Math.round(r.v.score * 100)}% · ${r.v.count}</span>
+                  <span class="pct cold ${r.cold.score === null ? "untested" : ""}">${r.cold.score === null ? "untested" : Math.round(r.cold.score * 100) + "%"}</span>
+                </div>`).join("")}
+            </div>` : `<div class="muted small mt12">No sessions logged yet. Import a receipt below to start tracking.</div>`}
+
+          <details class="mt16">
+            <summary class="small" style="cursor:pointer; color:var(--ink-2)">Import a session receipt</summary>
+            <p class="small muted mt8">Paste the JSON block your voice interviewer emits at the end of a session. Fenced or wrapped in prose is fine — the parser finds the object.</p>
+            <textarea class="voice-io" id="vcIn" placeholder='{"deskprep_voice_session":1, "id":"js-2026-08-18-1", ...}' spellcheck="false"></textarea>
+            <div class="row mt8" style="gap:8px">
+              <button class="btn sm primary" id="vcAdd">Import session</button>
+              <button class="btn sm" id="vcPrompt">Copy the voice-chat prompt</button>
+            </div>
+            <div class="voice-msg" id="vcMsg"></div>
+          </details>
+
+          ${state.voiceSessions.length ? `<div class="mt16">
+            ${state.voiceSessions.slice().reverse().map(sess => `
+              <div class="sess-row">
+                <span class="when">${relTime(sess.t)}</span>
+                <span>${esc(sess.source)} · ${sess.skills.length} skill${sess.skills.length === 1 ? "" : "s"}${sess.minutes ? " · " + sess.minutes + "m" : ""}</span>
+                <button class="rm" data-rmsess="${esc(sess.id)}" title="Remove this session">×</button>
+              </div>`).join("")}
+          </div>` : ""}
+        </div>
+
+        <div class="card mt16">
           <h2>Focus next</h2>
           ${(() => {
             const recs = [];
             if (assessed.length && assessed[0].score < 0.7)
               recs.push(`Your weakest assessed topic is <b>${esc(assessed[0].t.name)}</b> (${Math.round(assessed[0].score*100)}%) — drill it before adding new topics.`);
+            if (untested.length)
+              recs.push(`Logged in voice but never tested cold: ${untested.map(r => `<b>${esc(r.t.name.split("·")[0].trim())}</b>`).join(", ")} — talking it through is the easy half; drill it here to confirm.`);
             if (queue.length >= 3)
               recs.push(`${queue.length} questions sit in your review queue — clear those first; re-solving misses is the highest-yield 20 minutes in interview prep.`);
             if (untouched.length)
@@ -1541,6 +1738,7 @@ function renderProgress() {
           <div class="mt8">
             ${recent.length ? recent.map(h => {
               const name = h.kind === "q" ? (QUESTIONS.find(q => q.id === h.id) || {}).title
+                : h.kind === "voice" ? h.id
                 : h.kind === "drill" ? ({ mm: "Mental math drill", seq: "Sequence drill", fermi: "Fermi drill" })[h.id]
                 : (CODING_PROBLEMS.find(p => p.id === h.id) || {}).title;
               return `<div class="act-row"><span class="when">${relTime(h.t)}</span><span style="color:${h.ok ? "var(--good)" : "var(--critical)"}">${h.ok ? "✓" : "✗"}</span><span>${esc(name || h.id)}</span></div>`;
@@ -1572,8 +1770,37 @@ function renderProgress() {
     if (e.target.files[0]) Store.importJson(e.target.files[0], ok => { renderProgress(); updatePill(); });
   });
   $("#rstBtn").addEventListener("click", () => {
-    if (confirm("Wipe all progress (ratings, answers, coding status, PnL)?")) { Store.reset(); renderProgress(); updatePill(); }
+    if (confirm("Wipe all progress (ratings, answers, coding status, PnL, voice sessions)?")) { Store.reset(); renderProgress(); updatePill(); }
   });
+  $("#vcAdd").addEventListener("click", () => {
+    const msg = $("#vcMsg");
+    const res = parseVoiceReceipt($("#vcIn").value);
+    if (!res.ok) { msg.className = "voice-msg bad"; msg.innerHTML = res.errors.map(esc).join("<br>"); return; }
+    const replaced = mergeVoiceSession(res.session);
+    state.history.push({ t: Date.now(), kind: "voice", id: res.session.source + " · " + res.session.skills.length + " skills", ok: true });
+    Store.save();
+    const warn = res.warnings.length ? " (" + res.warnings.length + " warning" + (res.warnings.length === 1 ? "" : "s") + ")" : "";
+    renderProgress();
+    const m2 = $("#vcMsg");
+    m2.className = "voice-msg " + (res.warnings.length ? "warn" : "good");
+    m2.textContent = (replaced ? "Updated" : "Imported") + " " + res.session.skills.length + " skill" +
+      (res.session.skills.length === 1 ? "" : "s") + " from " + res.session.source + "." + warn;
+    m2.closest("details").open = true;
+  });
+  $("#vcPrompt").addEventListener("click", () => {
+    const msg = $("#vcMsg");
+    const done = ok => { msg.className = "voice-msg " + (ok ? "good" : "bad");
+      msg.textContent = ok ? "Prompt copied — paste it into your voice chat." : "Couldn't copy; the prompt is in the README."; };
+    if (navigator.clipboard) navigator.clipboard.writeText(VOICE_PROMPT).then(() => done(true), () => done(false));
+    else done(false);
+  });
+  $$("[data-rmsess]", el).forEach(b => b.addEventListener("click", () => {
+    const sess = state.voiceSessions.find(v => v.id === b.dataset.rmsess);
+    if (!sess) return;
+    if (!confirm("Remove this session (" + sess.skills.length + " skills)?")) return;
+    state.voiceSessions = state.voiceSessions.filter(v => v.id !== b.dataset.rmsess);
+    Store.save(); renderProgress();
+  }));
 }
 /* ============================================================
    p4_coding.js — part 4 of 6. The coding tab: problems, Python, and the coach.

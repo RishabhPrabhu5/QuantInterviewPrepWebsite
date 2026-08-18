@@ -13,6 +13,7 @@ Everything runs client-side. Progress persists to `localStorage`. The only netwo
 - [Repository layout](#repository-layout)
 - [Architecture](#architecture)
 - [Data model reference](#data-model-reference)
+- [Logging voice sessions](#logging-voice-sessions)
 - [Extending the app](#extending-the-app)
 - [Grading invariants](#grading-invariants)
 - [Verification workflow](#verification-workflow)
@@ -66,6 +67,8 @@ Timed drills (shared engine: duration vs question-count formats, typing vs multi
 
 ### Progress
 Solved counts, first-try accuracy, per-topic skill scores (weakest first, since that's your study order), "Focus next" recommendations, the auto-collected review queue, a recent-activity log, and JSON export/import.
+
+Also tracks **voice sessions** — spoken mock interviews held elsewhere, imported as a JSON receipt. They are scored on their own axis and printed beside the tested score for the same topic, so "I can talk through it" and "I can answer it cold" stay distinguishable. See [Logging voice sessions](#logging-voice-sessions).
 
 ---
 
@@ -201,6 +204,71 @@ An integer `v` with no explicit tolerance requires an exact match, with a "close
 ```
 
 `show: false` makes a test hidden — it still runs and still gates the pass, but the user sees only the label or "hidden test *n*". The function name the tests call is inferred from `starter` via `/def\s+(\w+)/`, so the starter's signature is load-bearing.
+
+---
+
+## Logging voice sessions
+
+Spoken mocks happen outside this app, so the data crosses the gap as a **receipt**: one JSON blob the interviewer emits at the end of a session, which you paste into Progress → Voice sessions → *Import a session receipt*.
+
+### Setting up the interviewer
+
+Once per chat, paste it the contract below (the **Copy the voice-chat prompt** button in that panel puts this exact text on your clipboard):
+
+```
+At the end of every session, output a JSON block in exactly this shape and nothing else inside it:
+
+{"deskprep_voice_session":1,
+ "id":"js-YYYY-MM-DD-1",
+ "date":"YYYY-MM-DD",
+ "source":"jane-street-voice",
+ "minutes":30,
+ "skills":[
+   {"topic":"prob2","label":"linearity of expectation","outcome":"solid","note":"one line of context"}
+ ]}
+
+topic must be exactly one of: mental, brain, prob1, prob2, games, markov, mart, stats, gametheory, mm, options, fermi
+outcome must be exactly one of:
+  solid = answered unaided
+  prompted = got there with hints
+  shaky = partial or slow
+  learned = newly taught, untested
+  missed = couldn't do it
+
+One entry per distinct skill exercised. Keep label under 40 characters.
+Give each session a unique id; re-emitting the same id overwrites that session rather than adding a duplicate.
+```
+
+### Receipt fields
+
+| Field | Required | Notes |
+|---|---|---|
+| `id` | recommended | Dedupe key. Re-importing the same `id` **replaces** that session, so a corrected receipt updates in place instead of double-counting. Defaults to a timestamp. |
+| `date` | optional | `YYYY-MM-DD`, anchored at noon to dodge timezone drift. Falls back to import time. |
+| `source` | optional | Free text, shown in the session list. Defaults to `voice`. |
+| `minutes` | optional | Displayed only. |
+| `skills[].topic` | **required** | Must match a `TOPICS` id exactly. |
+| `skills[].outcome` | **required** | Must match a `VOICE_OUTCOMES` key exactly. |
+| `skills[].label` | recommended | Short skill name; shown on row hover. |
+| `skills[].note` | optional | One line of context. |
+
+Parsing is tolerant on the outside and strict on the inside: the pasted text may be fenced or wrapped in prose (the parser takes the first `{` through the last `}`), but an unknown `topic` or `outcome` rejects the **whole receipt** rather than silently dropping a skill — a typo'd topic id would otherwise vanish without a trace.
+
+### How it scores
+
+`voiceSkill(tid)` averages the outcome weights for a topic across every logged session:
+
+| Outcome | Weight |
+|---|---|
+| `solid` | 1.0 |
+| `prompted` | 0.7 |
+| `shaky` | 0.45 |
+| `learned` | 0.3 |
+| `missed` | 0.12 |
+
+This is a **parallel** score. It never feeds `topicSkill()`, by design: merging self-reported spoken performance into checker-verified results would erase the distinction worth seeing. Where a topic has voice evidence but zero attempts in the bank, "Focus next" calls it out explicitly — talking through a solution with a friendly human is the easy half.
+
+Voice sessions ride along in export/import and are cleared by **Reset all**.
 
 ---
 
