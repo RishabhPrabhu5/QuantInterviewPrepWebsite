@@ -13,6 +13,7 @@ Everything runs client-side. Progress persists to `localStorage`. The only netwo
 - [Repository layout](#repository-layout)
 - [Architecture](#architecture)
 - [Data model reference](#data-model-reference)
+- [The High Show benchmark](#the-high-show-benchmark)
 - [Logging voice sessions](#logging-voice-sessions)
 - [Extending the app](#extending-the-app)
 - [Grading invariants](#grading-invariants)
@@ -56,10 +57,24 @@ Five bot-driven market games plus three timed drills. The market games all mix i
 - **Dice market making** — quote two-sided on the sum of *n* hidden dice across three rounds with progressive reveals. ~35% of arriving bots have peeked. Settlement decomposes your P&L into *versus informed* and *versus noise*, which is the actual lesson.
 - **Vol curve fitting** — drag your mid-vol curve across strikes on a canvas. Some quotes are noisy, some are flat-out stale, and a true smile hides underneath. Then 20 orders hit you and you're marked to truth, minus $200 per no-arbitrage violation (negative butterfly, adjacent-strike cliff) — the same convexity and monotonicity checks a real vol fitter runs.
 - **Fermi market** — a live three-minute continuous limit order book on an estimation question, against 10 bots in five behavioral styles (informed, fundamental, anchored, momentum, noise) with per-style mean-reversion toward truth. Settles at the researched answer, with a derivation panel.
-- **High Show** — optimal stopping with teeth: a shuffled deck of N sequential cards from a hidden start K (K ≤ 3N); keep the best M, but rejections cost you under one of five penalty functions (none, flat, per-turn, per-value, turn×value — the per-turn default depends on the hidden K, so the running penalty itself is hidden). Ends with you estimating K and your own net P&L before the reveal; session PnL is your result minus the no-skill baseline, plus estimate bonuses.
-- **Black − Red** — poker-shaped market making. Everyone gets 2 hole cards, 5 board cards reveal pre-flop → flop → turn → river, and the contract settles to Σ black ranks − Σ red ranks over every card dealt (A=1 … K=13). You quote a two-sided market each street; bots — who each know their own hole cards — trade 1 lot against it. Endgame asks you to compute the true value and estimate your own PnL before settlement, and the settlement decomposes your PnL into punter flow vs sharper flow.
+- **High Show** — optimal stopping with teeth: a shuffled deck of N sequential cards from a hidden start K (K ≤ 3N); keep the best M, but rejections cost you under one of five penalty functions (none, flat, per-turn, per-value, turn×value — the per-turn default depends on the hidden K, so the running penalty itself is hidden). Ends with you estimating K and your own net P&L before the reveal; session PnL is your result minus the no-skill baseline, plus estimate bonuses. Settlement also scores you against **optimal play** — see [the benchmark](#the-high-show-benchmark).
+- **Black − Red** — poker-shaped market making. Everyone gets 2 hole cards, 5 board cards reveal pre-flop → flop → turn → river, and the contract settles to Σ black ranks − Σ red ranks over every card dealt (A=1 … K=13). You quote a two-sided market each street **with size on each side**, and bots — who each know their own hole cards — take as much of it as their edge justifies (roughly `edge ÷ threshold` lots, capped by your quoted size). A **position limit** truncates fills, and a **risk charge** accrues on carried inventory at the end of every street, so net PnL = cash + position × value − charges. Endgame asks you to compute the true value and estimate your own PnL, and settlement decomposes into punter vs sharper flow, plus **edge per lot** — the number that actually matters.
 
-Timed drills (shared engine: duration vs question-count formats, typing vs multiple choice, skips, Enter-to-submit vs auto-advance, optional −1 per wrong answer, per-mode best scores persisted):
+  Simulated over 4,000 hands with an informed player (quoting around their own conditional mean), the mechanic produces a real skill peak, and size amplifies whatever edge you have in *both* directions:
+
+  | Quote width | 1-up | 5-up |
+  |---|---|---|
+  | 2 (too tight) | −15.2 | **−40.8** |
+  | 5 | −3.8 | −3.3 |
+  | 10 | +9.0 | +22.0 |
+  | 15 (optimum) | +12.6 | **+30.0** |
+  | 20 (too wide) | +10.5 | +28.7 |
+
+Timed drills (shared engine: duration vs question-count formats, typing vs multiple choice, skips, Enter-to-submit vs auto-advance, optional −1 per wrong answer, per-mode best scores persisted). Two engine-wide options:
+
+- **Retry misses** (on by default) — a missed question is re-served once before the run can end. In count mode the retries close out the run; in timed mode one is folded in every third question. The results review marks them with `↻`, and the drill reports how many you cleared on the second look.
+- **Adaptive difficulty** — two right in a row moves you up a rung, one wrong moves you down, and the run reports the level you reached. Mental Math ladders `easy → medium → optiver → hard → akuna`; Sequences ladders across its three generator pools (`easy → easy+ → medium → medium+ → hard`). Fermi has no ladder — its questions come from a fixed bank — so it takes the retry queue only.
+
 
 - **Mental Math Sprint** — Optiver/Akuna-style arithmetic with presets (easy → 80-in-8 style) or a fully custom operation mix: add/sub/mul/div with bounds, decimals (incl. leading-zero "fancy" mode), fractions with denominators ≤ 12, squares/cubes, and integer or 1-dp roots.
 - **Sequence Completion** — fill the blank in generated sequences across three difficulty pools (arithmetic/geometric/squares/Fibonacci-style up through interleaved, recursive, and factorial-step patterns), typed or multiple-choice.
@@ -204,6 +219,36 @@ An integer `v` with no explicit tolerance requires an exact match, with a "close
 ```
 
 `show: false` makes a test hidden — it still runs and still gates the pass, but the user sees only the label or "hidden test *n*". The function name the tests call is inferred from `starter` via `/def\s+(\w+)/`, so the starter's signature is load-bearing.
+
+---
+
+## The High Show benchmark
+
+"Beat take-the-first-M" is a very low bar, so clearing it says little about how you played. High Show settles against a real optimal-stopping policy instead, and reports your **efficiency** against it.
+
+**With no penalty the answer is exact and needs no search.** Rejecting is free, so accepting only when a card ranks in the top *m* of what remains secures the *M* highest cards of the deck every time — the benchmark is just their sum.
+
+**With a penalty**, `buildPolicy()` solves by backward induction over "cards still to see" × "picks left":
+
+```
+V[r][m] = E_v[ max( v + V[r-1][m-1],  V[r-1][m] - penalty(v, i) ) ]
+```
+
+with `i = N-r+1` the turn index, and the skip branch dropped once `r-1 < m` (too few cards left to reject any more). That expectation treats each card as an iid draw from the deck, which is not quite true — the deck is dealt without replacement — so `referenceScore()` does not trust the table's own number. It re-runs the *induced accept/reject rule* over real shuffles of the real deck and averages the realised net, giving an unbiased estimate of what the policy actually scores on your configuration.
+
+Validated against a brute-force solver that enumerates the true game (memoised over remaining-value subsets — exact, but exponential):
+
+| Config | Exact optimum | Policy | Gap |
+|---|---|---|---|
+| N7 / M1 / no penalty | 19.000 | 19.000 | exact (closed form) |
+| N7 / M2 / no penalty | 31.000 | 31.000 | exact (closed form) |
+| N16 / M1 / no penalty | 25.000 | 25.000 | exact (closed form) |
+| N8 / M2 / linear | 20.091 | 19.719 | 1.85% |
+| N8 / M3 / per-value | 70.500 | 70.500 | 0.00% |
+| N7 / M2 / turn×value | 30.458 | 30.391 | 0.22% |
+| N8 / M2 / per-turn | 13.651 | 13.606 | 0.33% |
+
+So the penalised benchmark is *near*-optimal, within about 2%, and an efficiency a shade over 100% means you matched it rather than that the meter broke. Either way the policy knows K, so it never had to do the inference half of the game — treat it as a ceiling, not a par. Worst-case cost (N=300, keep 50) is ~30 ms.
 
 ---
 

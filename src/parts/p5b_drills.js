@@ -64,6 +64,10 @@ function drillSettingsHTML(o) {
       <select id="dsAnsFmt"><option value="type">Typing in</option><option value="mc">Multiple choice</option></select></div>`}
     <div class="quote-field"><label>Allow skips</label>
       <select id="dsSkip"><option value="1">Enabled</option><option value="0">Disabled</option></select></div>
+    <div class="quote-field"><label>Retry misses</label>
+      <select id="dsRetry"><option value="1" selected>Enabled</option><option value="0">Disabled</option></select></div>
+    ${o.noAdapt ? "" : `<div class="quote-field"><label>Difficulty</label>
+      <select id="dsAdapt"><option value="0">Fixed by mode</option><option value="1">Adaptive — ramps with you</option></select></div>`}
     ${o.noMove ? "" : `<div class="quote-field"><label>Movement</label>
       <select id="dsMove"><option value="enter">Press Enter</option><option value="auto">Auto-advance</option></select></div>
     <div class="quote-field"><label>Penalize wrong</label>
@@ -84,6 +88,8 @@ function readDrillSettings() {
     count: Math.round(clamp(+$("#dsCount").value || 20, 1, 200)),
     ansFmt: $("#dsAnsFmt") ? $("#dsAnsFmt").value : "type",
     skip: $("#dsSkip").value === "1",
+    retry: $("#dsRetry") ? $("#dsRetry").value === "1" : true,
+    adaptive: $("#dsAdapt") ? $("#dsAdapt").value === "1" : false,
     auto: $("#dsMove") ? $("#dsMove").value === "auto" : false,
     pen: $("#dsPen") ? $("#dsPen").value === "1" : false,
   };
@@ -101,10 +107,47 @@ function drillBestChips(gameId) {
 function runDrill(S) {
   Floor.stopAll();
   const timed = S.format === "time";
-  const queue = timed ? null : Array.from({ length: S.count }, () => S.gen());
+  /* Question sources, in priority order:
+       pending — skipped in count mode, comes straight back
+       fresh   — generated on demand (lazily, so the ladder can move mid-run)
+       retry   — missed once, re-served before the run can end
+     Timed runs have no fixed supply, so a retry is folded in every third
+     question instead of waiting for a queue that never empties. */
+  const pending = [], retry = [];
+  let made = 0, served = 0, retryAdded = 0;
   const results = [];
   let score = 0, correct = 0, wrong = 0, skipped = 0;
   let cur = null, penalized = false, answered = false, over = false;
+
+  /* Adaptive ladder: two right in a row moves up, one wrong moves down. Two
+     rather than three because a 2-minute sprint has to reach your real level
+     while there is still time left to test it. */
+  const ladder = (S.adaptive && S.ladder && S.ladder.length > 1) ? S.ladder : null;
+  let level = 0, streak = 0, levelPeak = 0;
+  const genOne = () => (ladder ? ladder[level].gen() : S.gen());
+  function levelUp() {
+    if (!ladder) return;
+    if (++streak >= 2 && level < ladder.length - 1) { level++; streak = 0; showLevel("up"); }
+    if (level > levelPeak) levelPeak = level;
+  }
+  function levelDown() {
+    if (!ladder) return;
+    streak = 0;
+    if (level > 0) { level--; showLevel("down"); }
+  }
+  function showLevel(dir) {
+    const el = $("#drLevel");
+    if (!el) return;
+    el.textContent = `${level + 1}/${ladder.length} · ${ladder[level].label}`;
+    el.classList.remove("lv-up", "lv-down");
+    void el.offsetWidth;                                  // restart the flash
+    el.classList.add(dir === "up" ? "lv-up" : "lv-down");
+  }
+  function noteMiss(q) {
+    if (!S.retry || !q || q.tries >= 1) return;            // one second look, not a loop
+    retry.push({ ...q, tries: (q.tries || 0) + 1, redo: true });
+    retryAdded++;
+  }
   const t0 = Date.now();
   const endT = t0 + S.seconds * 1000;
 
@@ -121,6 +164,8 @@ function runDrill(S) {
           <div class="stat-tile"><div class="k">Score</div><div class="v" id="drScore">0</div></div>
           <div class="stat-tile"><div class="k">Correct</div><div class="v" id="drRight">0</div></div>
           <div class="stat-tile"><div class="k">Wrong</div><div class="v" id="drWrong">0</div></div>
+          ${ladder ? `<div class="stat-tile"><div class="k">Level</div><div class="v" id="drLevel">1/${ladder.length} · ${esc(ladder[0].label)}</div></div>` : ""}
+          ${S.retry ? `<div class="stat-tile"><div class="k">Retry queue</div><div class="v" id="drRetry">0</div></div>` : ""}
         </div>
         <button class="btn sm ghost" id="drEnd">Finish now</button>
       </div>
@@ -134,7 +179,8 @@ function runDrill(S) {
   $("#drEnd").addEventListener("click", () => end());
 
   const scoreDisp = () => { $("#drScore").textContent = S.scored ? (Math.round(score * 10) / 10) : score;
-                           $("#drRight").textContent = correct; $("#drWrong").textContent = wrong; };
+                           $("#drRight").textContent = correct; $("#drWrong").textContent = wrong;
+                           const rq = $("#drRetry"); if (rq) rq.textContent = retry.length; };
   const tick = () => {
     if (over) return;
     if (timed) {
@@ -143,7 +189,7 @@ function runDrill(S) {
       $("#drTimer").classList.toggle("low", left < 10);
       if (left <= 0) end();
     } else {
-      $("#drTimer").textContent = `${results.length}/${S.count} · ${fmtClock((Date.now() - t0) / 1000)}`;
+      $("#drTimer").textContent = `${results.length}/${S.count + retryAdded} · ${fmtClock((Date.now() - t0) / 1000)}`;
     }
   };
   Floor.every(tick, 250);
@@ -154,13 +200,25 @@ function runDrill(S) {
   }
   const isRight = x => x !== null && Math.abs(x - cur.a) <= (cur.tol ?? Math.max(1e-9, Math.abs(cur.a) * 1e-9));
 
+  function pickNext() {
+    if (timed) {
+      served++;
+      if (retry.length && served % 3 === 0) return retry.shift();
+      return genOne();
+    }
+    if (pending.length) return pending.shift();           // skipped — come back to it
+    if (made < S.count) { made++; return genOne(); }
+    if (retry.length) return retry.shift();               // misses close out the run
+    return null;
+  }
+
   function next() {
     if (over) return;
     penalized = false; answered = false;
-    if (!timed && !queue.length) return end();
-    cur = timed ? S.gen() : queue.shift();
+    cur = pickNext();
+    if (!cur) return end();
     $("#drQ").innerHTML = cur.qh || esc(cur.q);
-    $("#drSub").textContent = cur.sub || "";
+    $("#drSub").textContent = (cur.redo ? "second look · " : "") + (cur.sub || "");
     $("#drFb").textContent = ""; $("#drFb").style.color = "";
     renderAnswer();
     renderCtl();
@@ -175,12 +233,14 @@ function runDrill(S) {
         if (answered || over) return;
         if (b.dataset.mc === cur.disp) {
           score++; correct++;
-          results.push({ q: cur.q, given: b.dataset.mc, ans: cur.disp, ok: true });
+          results.push({ q: cur.q, given: b.dataset.mc, ans: cur.disp, ok: true, redo: cur.redo });
+          levelUp();
           scoreDisp(); next();
         } else {
           wrong++;
           if (S.pen && !penalized) { score--; penalized = true; }
-          results.push({ q: cur.q, given: b.dataset.mc, ans: cur.disp, ok: false });
+          results.push({ q: cur.q, given: b.dataset.mc, ans: cur.disp, ok: false, redo: cur.redo });
+          noteMiss(cur); levelDown();
           b.classList.add("mc-bad");
           scoreDisp();
           Floor.after(() => next(), 350);
@@ -209,14 +269,15 @@ function runDrill(S) {
       if (over || answered) return;
       skipped++;
       if (timed) results.push({ q: cur.q, given: "(skipped)", ans: cur.disp, ok: false, skip: true });
-      else queue.push(cur);                        // come back to it later
+      else pending.push(cur);                      // come back to it later
       next();
     });
   }
 
   function onCorrect(raw) {
     score++; correct++;
-    results.push({ q: cur.q, given: raw.trim(), ans: cur.disp, ok: true });
+    results.push({ q: cur.q, given: raw.trim(), ans: cur.disp, ok: true, redo: cur.redo });
+    levelUp();
     scoreDisp(); next();
   }
 
@@ -227,7 +288,8 @@ function runDrill(S) {
     if (S.scored) {
       const s = Math.round(S.scoreFn(x, cur.a, cur) * 100) / 100;
       score += s; (s >= 0.9 ? correct++ : wrong++);
-      results.push({ q: cur.q, given: raw.trim(), ans: cur.disp, s });
+      if (s >= 0.9) levelUp(); else { noteMiss(cur); levelDown(); }
+      results.push({ q: cur.q, given: raw.trim(), ans: cur.disp, s, redo: cur.redo });
       answered = true;
       $("#drIn").disabled = true;
       $("#drFb").style.color = s >= 0.9 ? "var(--good)" : s > 0.4 ? "var(--warning)" : "var(--critical)";
@@ -238,8 +300,9 @@ function runDrill(S) {
     }
     if (isRight(x)) return onCorrect(raw);
     wrong++;
+    if (!penalized) { noteMiss(cur); levelDown(); }        // one miss per question, not per keystroke
     if (S.pen && !penalized) { score--; penalized = true; $("#drFb").textContent = "✗ −1 — keep trying or skip."; }
-    else $("#drFb").textContent = "✗ not it — keep trying" + (S.skip ? " or skip." : ".");
+    else { penalized = true; $("#drFb").textContent = "✗ not it — keep trying" + (S.skip ? " or skip." : "."); }
     $("#drFb").style.color = "var(--critical)";
     $("#drIn").classList.add("flash-bad");
     Floor.after(() => { const i = $("#drIn"); if (i) i.classList.remove("flash-bad"); }, 400);
@@ -272,10 +335,12 @@ function runDrill(S) {
           <div class="stat-tile"><div class="k">Skipped</div><div class="v">${skipped}</div></div>
           <div class="stat-tile"><div class="k">Accuracy</div><div class="v">${acc === null ? "—" : acc + "%"}</div></div>
           <div class="stat-tile"><div class="k">Pace</div><div class="v">${rate}/min</div></div>
+          ${ladder ? `<div class="stat-tile"><div class="k">Level reached</div><div class="v">${levelPeak + 1}/${ladder.length} · ${esc(ladder[levelPeak].label)}</div></div>` : ""}
+          ${retryAdded ? `<div class="stat-tile"><div class="k">Re-served</div><div class="v">${retryAdded - retry.length}/${retryAdded}</div></div>` : ""}
           <div class="stat-tile"><div class="k">Best (${esc(S.modeKey)})</div><div class="v">${state.drillBests[key].score}${isBest && prev ? " ★" : isBest ? " ★" : ""}</div></div>
         </div>
         ${results.length ? `<div class="mt16" style="max-height:260px; overflow-y:auto">
-          ${results.slice(0, 200).map(r => `<div class="rev-row">
+          ${results.slice(0, 200).map(r => `<div class="rev-row${r.redo ? " redo" : ""}">
             <span>${esc(r.q)}</span><span class="muted">${esc(String(r.given))}</span><span>${esc(String(r.ans))}</span>
             <span style="color:${r.skip ? "var(--warning)" : (r.ok || r.s >= 0.9) ? "var(--good)" : "var(--critical)"}">${r.skip ? "→" : r.s !== undefined ? r.s.toFixed(2) : r.ok ? "✓" : "✗"}</span>
           </div>`).join("")}</div>` : `<p class="small muted mt8">No questions answered.</p>`}
@@ -367,6 +432,28 @@ const MentalDrill = {
     set("opRoot", p.root); if (p.root) { $("#opRootMode").value = p.root[1]; set("opRootLo", p.root[2]); set("opRootHi", p.root[3]); }
   },
 
+  /* The DOM-free twin of applyPreset(): the adaptive ladder needs operation
+     mixes without a settings panel to read them out of. */
+  opsFromPreset(key) {
+    const p = this.PRESETS[key];
+    return {
+      add:  { on: !!p.add[0], lo: p.add[1], hi: p.add[2], nn: !!p.add[3] },
+      mul:  p.mul ? { on: true, lo: p.mul[1], hi: p.mul[2], dlo: p.mul[3], dhi: p.mul[4] }
+                  : { on: false, lo: 2, hi: 19, dlo: 2, dhi: 19 },
+      dec:  { on: !!p.dec, fancy: false },
+      frac: { on: !!p.frac },
+      pow:  p.pow ? { on: true, lo: p.pow[1], hi: p.pow[2] } : { on: false, lo: 2, hi: 20 },
+      root: p.root ? { on: true, mode: p.root[1], lo: p.root[2], hi: p.root[3] }
+                   : { on: false, mode: "int", lo: 2, hi: 40 },
+    };
+  },
+
+  LADDER: ["easy", "medium", "optiver", "hard", "akuna"],
+
+  buildLadder() {
+    return this.LADDER.map(k => ({ label: k, gen: this.buildGen(this.opsFromPreset(k)) }));
+  },
+
   launch(prev) {
     const cfg = prev || {
       mode: $("#mmMode").value,
@@ -386,6 +473,7 @@ const MentalDrill = {
       modeKey: cfg.mode, modeLabel: this.MODES[cfg.mode].label,
       format: cfg.format, seconds: cfg.seconds, count: cfg.count,
       ansFmt: cfg.ansFmt, skip: cfg.skip, auto: cfg.auto, pen: cfg.pen,
+      retry: cfg.retry, adaptive: cfg.adaptive, ladder: this.buildLadder(),
       gen: this.buildGen(cfg.ops),
       again: () => this.launch(cfg), settings: () => this.start(),
     });
@@ -518,6 +606,14 @@ const SeqDrill = {
     $("#sqStart").addEventListener("click", () => this.launch());
   },
 
+  LADDER: [
+    { label: "easy", pools: ["e"] },
+    { label: "easy+", pools: ["e", "m"] },
+    { label: "medium", pools: ["m"] },
+    { label: "medium+", pools: ["m", "h"] },
+    { label: "hard", pools: ["h"] },
+  ],
+
   launch(prev) {
     const cfg = prev || { mode: $("#sqMode").value, ...readDrillSettings() };
     const pools = this.MODES[cfg.mode].pools;
@@ -526,6 +622,8 @@ const SeqDrill = {
       modeKey: cfg.mode, modeLabel: this.MODES[cfg.mode].label,
       format: cfg.format, seconds: cfg.seconds, count: cfg.count,
       ansFmt: cfg.ansFmt, skip: cfg.skip, auto: cfg.auto, pen: cfg.pen,
+      retry: cfg.retry, adaptive: cfg.adaptive,
+      ladder: this.LADDER.map(l => ({ label: l.label, gen: () => this.makeQ(l.pools) })),
       gen: () => this.makeQ(pools),
       again: () => this.launch(cfg), settings: () => this.start(),
     });
@@ -615,7 +713,7 @@ const FermiDrill = {
             <select id="feMode">${Object.entries(this.MODES).map(([k, m]) =>
               `<option value="${k}">${m.label}</option>`).join("")}</select></div>
         </div>
-        ${drillSettingsHTML({ format: "time", min: 5, count: 10, noFmt: true, noMove: true })}
+        ${drillSettingsHTML({ format: "time", min: 5, count: 10, noFmt: true, noMove: true, noAdapt: true })}
         <div class="row mt16"><button class="btn primary" id="feStart">Start →</button></div>
         ${drillBestChips("fermi")}
       </div>`;
@@ -631,7 +729,7 @@ const FermiDrill = {
       modeKey: cfg.mode, modeLabel: this.MODES[cfg.mode].label,
       format: cfg.format, seconds: cfg.seconds, count: cfg.count,
       ansFmt: "type", skip: cfg.skip, auto: false, pen: false,
-      scored: true,
+      retry: cfg.retry, scored: true,
       scoreFn: (x, a, q) => {
         if (!(x > 0) || !(a > 0)) return x === a ? 1 : 0;
         return q.kind === "math"

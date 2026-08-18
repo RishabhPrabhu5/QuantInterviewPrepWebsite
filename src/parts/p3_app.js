@@ -62,6 +62,7 @@ const state = {
   codingStatus: {},     // pid -> 'passed' | 'attempted'
   codingAtt: {},        // pid -> run count
   drillBests: {},       // "<drill>:<mode>" -> {score}   (timed drills, p5b)
+  gameBests: {},        // "<game>:<config>" -> {score, at, label}  (floor games)
   voiceSessions: [],    // [{id, t, source, minutes, skills:[{topic,label,outcome,note}]}]
   history: [],          // [{t, kind:'q'|'code'|'drill'|'voice', id, ok}]
   pnlTotal: 0,
@@ -78,7 +79,7 @@ const Store = {
       localStorage.setItem(this.KEY, JSON.stringify({
         ratings: state.ratings, qstats: state.qstats, codingStatus: state.codingStatus,
         codingAtt: state.codingAtt, drillBests: state.drillBests,
-        voiceSessions: state.voiceSessions,
+        gameBests: state.gameBests, voiceSessions: state.voiceSessions,
         history: state.history.slice(-200), pnlTotal: state.pnlTotal,
         drafts: (typeof Coding !== "undefined") ? Coding.drafts : {},
       }));
@@ -94,6 +95,7 @@ const Store = {
       Object.assign(state.codingStatus, d.codingStatus || {});
       Object.assign(state.codingAtt, d.codingAtt || {});
       Object.assign(state.drillBests, d.drillBests || {});
+      Object.assign(state.gameBests, d.gameBests || {});
       state.voiceSessions = d.voiceSessions || [];
       state.history = d.history || [];
       state.pnlTotal = d.pnlTotal || 0;
@@ -104,7 +106,7 @@ const Store = {
     const blob = new Blob([JSON.stringify({
       ratings: state.ratings, qstats: state.qstats, codingStatus: state.codingStatus,
       codingAtt: state.codingAtt, drillBests: state.drillBests,
-      voiceSessions: state.voiceSessions,
+      gameBests: state.gameBests, voiceSessions: state.voiceSessions,
       history: state.history, pnlTotal: state.pnlTotal,
       drafts: (typeof Coding !== "undefined") ? Coding.drafts : {}, exported: new Date().toISOString(),
     }, null, 1)], { type: "application/json" });
@@ -124,6 +126,8 @@ const Store = {
         Object.assign(state.codingStatus, d.codingStatus || {});
         Object.assign(state.codingAtt, d.codingAtt || {});
         Object.assign(state.drillBests, d.drillBests || {});
+        for (const [k, v] of Object.entries(d.gameBests || {}))
+          if (!state.gameBests[k] || v.score > state.gameBests[k].score) state.gameBests[k] = v;
         if (d.voiceSessions) d.voiceSessions.forEach(v => mergeVoiceSession(v));
         state.history = d.history || state.history;
         state.pnlTotal = d.pnlTotal ?? state.pnlTotal;
@@ -136,7 +140,7 @@ const Store = {
   reset() {
     state.ratings = {}; state.qstats = {}; state.codingStatus = {}; state.codingAtt = {};
     state.drillBests = {}; state.history = []; state.pnlTotal = 0;
-    state.voiceSessions = [];
+    state.gameBests = {}; state.voiceSessions = [];
     if (typeof Coding !== "undefined") Coding.drafts = {};
     if (this.ok) try { localStorage.removeItem(this.KEY); } catch (e) {}
   },
@@ -617,6 +621,44 @@ function voiceSkill(tid) {
   return { score: n ? sum / n : null, count: n, last, labels };
 }
 
+/* Trading Floor games keep a personal best per (game, configuration), the way
+   the drills already do in state.drillBests. Keyed by config because a best
+   set at N=50/keep-5 says nothing about N=200/keep-20 — one leaderboard across
+   incomparable setups would just reward picking the easy one. Higher is always
+   better; games that want "lower is better" should negate before recording. */
+function recordGameBest(game, config, score, label) {
+  const key = game + ":" + config;
+  const prev = state.gameBests[key];
+  const isBest = !prev || score > prev.score;
+  if (isBest) state.gameBests[key] = { score, at: Date.now(), label: label || "" };
+  Store.save();
+  const r = v => Math.round(v * 100) / 100;
+  const html = isBest
+    ? `<div class="best-banner new">🏆 New best for ${esc(config)} — ${r(score)}${prev ? ` (was ${r(prev.score)})` : " (first run)"}</div>`
+    : `<div class="best-banner">Best for ${esc(config)}: ${r(prev.score)} · ${relTime(prev.at)}</div>`;
+  return { isBest, prev, html };
+}
+
+function gameBestsFor(game) {
+  return Object.entries(state.gameBests)
+    .filter(([k]) => k.startsWith(game + ":"))
+    .map(([k, v]) => ({ config: k.slice(game.length + 1), ...v }))
+    .sort((a, b) => b.at - a.at);
+}
+
+/* One chip row for a Trading Floor tile. Games keep bests in state.gameBests,
+   drills in state.drillBests — same idea, two stores, so this normalises them
+   for the hub rather than making either side move. */
+function floorBestChips(key, src) {
+  const rows = src === "game"
+    ? gameBestsFor(key).map(r => ({ config: r.config, score: r.score }))
+    : Object.entries(state.drillBests || {}).filter(([k]) => k.startsWith(key + ":"))
+        .map(([k, v]) => ({ config: k.slice(key.length + 1), score: v.score }));
+  if (!rows.length) return "";
+  return `<div class="g-bests">${rows.slice(0, 3).map(r =>
+    `<span class="best-chip">${esc(r.config)} · ${Math.round(r.score * 10) / 10}</span>`).join("")}</div>`;
+}
+
 function relTime(t) {
   const d = Date.now() - t;
   if (d < 60e3) return "just now";
@@ -789,6 +831,30 @@ function renderProgress() {
             }).join("") : `<div class="muted small">Nothing yet.</div>`}
           </div>
         </div>
+        <div class="card mt16">
+          <h3>Trading Floor bests</h3>
+          <p class="small muted">Per configuration — a best at N=50/keep-3 says nothing about N=200/keep-10, so they don't share a leaderboard.</p>
+          ${(() => {
+            const rows = [
+              ...Object.entries(state.gameBests).map(([k, v]) => {
+                const g = k.slice(0, k.indexOf(":"));
+                return { game: ({ hs: "🎴 High Show", br: "♠ Black − Red" })[g] || g,
+                         config: k.slice(g.length + 1), score: v.score, unit: v.label || "", at: v.at };
+              }),
+              ...Object.entries(state.drillBests).map(([k, v]) => {
+                const g = k.slice(0, k.indexOf(":"));
+                return { game: ({ mm: "⚡ Mental Math", seq: "🔢 Sequences", fermi: "🧮 Fermi" })[g] || g,
+                         config: k.slice(g.length + 1), score: v.score, unit: "score", at: 0 };
+              }),
+            ].sort((a, b) => a.game.localeCompare(b.game) || a.config.localeCompare(b.config));
+            return rows.length ? `<div class="mt8">${rows.map(r => `
+              <div class="act-row"><span style="min-width:120px">${esc(r.game)}</span>
+                <span class="muted small">${esc(r.config)}</span>
+                <span style="margin-left:auto; font-family:var(--mono); font-weight:650">${Math.round(r.score * 10) / 10}${r.unit === "efficiency %" ? "%" : ""}</span></div>`).join("")}</div>`
+              : `<div class="muted small mt8">Nothing yet — the Trading Floor records a best per game and setup.</div>`;
+          })()}
+        </div>
+
         <div class="card mt16">
           <h3>Progress data</h3>
           <div class="row mt8" style="gap:8px">
