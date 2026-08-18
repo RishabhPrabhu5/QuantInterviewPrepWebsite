@@ -367,6 +367,38 @@
   .skill-track { height: 8px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
   .skill-fill { height: 100%; border-radius: 4px; background: var(--s1); }
   .skill-row .pct { font: 600 12px var(--mono); color: var(--ink-muted); }
+  .skill-fill.voice { background: var(--s3); }
+  .best-banner { margin-top: 12px; padding: 8px 12px; border-radius: 8px; font: 600 12.5px var(--sans);
+    background: var(--surface-3); color: var(--ink-2); border: 1px solid var(--border); }
+  .best-banner.new { background: rgba(12,163,12,.14); border-color: rgba(12,163,12,.45); color: #7ede7e; }
+  .best-chip { font: 600 11px var(--mono); color: var(--ink-muted);
+    background: var(--surface-3); border-radius: 5px; padding: 2px 7px; }
+  .g-bests { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
+  #drLevel { font-size: 12px; }
+  @keyframes lvUp   { from { color: var(--good); transform: translateY(3px); } to { color: inherit; transform: none; } }
+  @keyframes lvDown { from { color: var(--warning); transform: translateY(-3px); } to { color: inherit; transform: none; } }
+  .lv-up   { animation: lvUp .45s ease-out; }
+  .lv-down { animation: lvDown .45s ease-out; }
+  .rev-row.redo span:first-child::before { content: "↻ "; color: var(--warning); }
+  .voice-row { grid-template-columns: 190px 1fr 78px 78px; }
+  @media (max-width: 800px) { .voice-row { grid-template-columns: 120px 1fr 62px 62px; } }
+  .voice-row .pct.cold { text-align: right; }
+  .voice-row .pct.untested { color: var(--warning); }
+  .voice-io { width: 100%; min-height: 108px; resize: vertical; margin-top: 8px;
+    background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 11px; font: 500 12px var(--mono); line-height: 1.5; }
+  .voice-io:focus { outline: none; border-color: var(--s3); }
+  .voice-msg { margin-top: 8px; font-size: 12.5px; min-height: 17px; }
+  .voice-msg.bad { color: var(--critical); }
+  .voice-msg.good { color: var(--good); }
+  .voice-msg.warn { color: var(--warning); }
+  .sess-row { display: flex; gap: 10px; align-items: baseline; font-size: 12.5px;
+    color: var(--ink-2); padding: 5px 0; border-bottom: 1px solid var(--grid); }
+  .sess-row:last-child { border-bottom: 0; }
+  .sess-row .when { color: var(--ink-muted); font-family: var(--mono); font-size: 11.5px; min-width: 70px; }
+  .sess-row .rm { margin-left: auto; cursor: pointer; color: var(--ink-muted); border: 0;
+    background: none; font-size: 14px; line-height: 1; padding: 0 4px; }
+  .sess-row .rm:hover { color: var(--critical); }
   .queue-row {
     display: flex; justify-content: space-between; align-items: center; gap: 10px;
     background: var(--surface); border: 1px solid var(--border); border-radius: 9px;
@@ -944,7 +976,8 @@ QUESTIONS.push(
      4. answer checking        parseAnswer() / checkAnswer() / fmtExpected()
      5. Roadmap view           stages, topic cards, firm playbooks
      6. Question Bank view     filters, list, and the question modal
-     7. Progress view          skill scores, recommendations, review queue, I/O
+     7. voice sessions         receipt schema, parser, and the parallel score
+     8. Progress view          skill scores, recommendations, review queue, I/O
 
    RENDERING MODEL. No framework and no reactivity: each view owns a render
    function that rebuilds its subtree from a template string and re-binds its
@@ -960,6 +993,17 @@ QUESTIONS.push(
    false; the Progress tab surfaces a banner explaining the degraded mode.
    Bump the KEY string only alongside a migration, since old blobs are read
    with Object.assign and unknown fields are ignored.
+
+   VOICE SESSIONS come from spoken mocks held outside this app, so they cross
+   the gap as a receipt: one JSON blob per session, pasted into the Progress
+   tab. parseVoiceReceipt() is deliberately tolerant (finds the first {...} in
+   fenced or prose-wrapped text) but strict on content — an unknown topic id
+   or outcome rejects the whole receipt rather than silently dropping a skill.
+   Sessions merge by id, so re-pasting a corrected receipt updates in place.
+   voiceSkill() is a SECOND score and never feeds topicSkill(): what you can
+   talk through with a human is not what you can answer cold, and merging the
+   two would hide that gap. The Progress tab prints them side by side and
+   calls out topics logged in voice but never tested here.
 
    ANSWER CHECKING is the subtle part. parseAnswer() normalizes currency
    symbols, thousands separators, unicode minus, percents, k/M/B/T suffixes
@@ -986,7 +1030,9 @@ const state = {
   codingStatus: {},     // pid -> 'passed' | 'attempted'
   codingAtt: {},        // pid -> run count
   drillBests: {},       // "<drill>:<mode>" -> {score}   (timed drills, p5b)
-  history: [],          // [{t, kind:'q'|'code', id, ok}]
+  gameBests: {},        // "<game>:<config>" -> {score, at, label}  (floor games)
+  voiceSessions: [],    // [{id, t, source, minutes, skills:[{topic,label,outcome,note}]}]
+  history: [],          // [{t, kind:'q'|'code'|'drill'|'voice', id, ok}]
   pnlTotal: 0,
   view: "roadmap",
   bankFilters: { topic: "all", firm: "all", diff: "all", status: "all" },
@@ -1001,6 +1047,7 @@ const Store = {
       localStorage.setItem(this.KEY, JSON.stringify({
         ratings: state.ratings, qstats: state.qstats, codingStatus: state.codingStatus,
         codingAtt: state.codingAtt, drillBests: state.drillBests,
+        gameBests: state.gameBests, voiceSessions: state.voiceSessions,
         history: state.history.slice(-200), pnlTotal: state.pnlTotal,
         drafts: (typeof Coding !== "undefined") ? Coding.drafts : {},
       }));
@@ -1016,6 +1063,8 @@ const Store = {
       Object.assign(state.codingStatus, d.codingStatus || {});
       Object.assign(state.codingAtt, d.codingAtt || {});
       Object.assign(state.drillBests, d.drillBests || {});
+      Object.assign(state.gameBests, d.gameBests || {});
+      state.voiceSessions = d.voiceSessions || [];
       state.history = d.history || [];
       state.pnlTotal = d.pnlTotal || 0;
       this._drafts = d.drafts || {};
@@ -1025,6 +1074,7 @@ const Store = {
     const blob = new Blob([JSON.stringify({
       ratings: state.ratings, qstats: state.qstats, codingStatus: state.codingStatus,
       codingAtt: state.codingAtt, drillBests: state.drillBests,
+      gameBests: state.gameBests, voiceSessions: state.voiceSessions,
       history: state.history, pnlTotal: state.pnlTotal,
       drafts: (typeof Coding !== "undefined") ? Coding.drafts : {}, exported: new Date().toISOString(),
     }, null, 1)], { type: "application/json" });
@@ -1044,6 +1094,9 @@ const Store = {
         Object.assign(state.codingStatus, d.codingStatus || {});
         Object.assign(state.codingAtt, d.codingAtt || {});
         Object.assign(state.drillBests, d.drillBests || {});
+        for (const [k, v] of Object.entries(d.gameBests || {}))
+          if (!state.gameBests[k] || v.score > state.gameBests[k].score) state.gameBests[k] = v;
+        if (d.voiceSessions) d.voiceSessions.forEach(v => mergeVoiceSession(v));
         state.history = d.history || state.history;
         state.pnlTotal = d.pnlTotal ?? state.pnlTotal;
         if (d.drafts && typeof Coding !== "undefined") Object.assign(Coding.drafts, d.drafts);
@@ -1055,6 +1108,7 @@ const Store = {
   reset() {
     state.ratings = {}; state.qstats = {}; state.codingStatus = {}; state.codingAtt = {};
     state.drillBests = {}; state.history = []; state.pnlTotal = 0;
+    state.gameBests = {}; state.voiceSessions = [];
     if (typeof Coding !== "undefined") Coding.drafts = {};
     if (this.ok) try { localStorage.removeItem(this.KEY); } catch (e) {}
   },
@@ -1430,6 +1484,149 @@ function topicSkill(tid) {
   return { score: n ? sum / n : null, attempted, total: qs.length };
 }
 
+/* ---- Voice sessions -------------------------------------------------------
+   Spoken mock interviews happen outside this file (and outside this app), so
+   they cross the gap as a "receipt": one JSON blob the interviewer emits at
+   the end of a session, which the Progress tab ingests. Deliberately kept as
+   a SECOND, parallel signal — voiceSkill() never feeds topicSkill(), because
+   what you can talk through with a human is not what you can answer cold, and
+   collapsing the two would hide exactly the gap worth seeing.
+   Outcome weights mirror the bank's: unaided 1.0 down to a miss at 0.12.  */
+const VOICE_OUTCOMES = {
+  solid:    { w: 1.0,  label: "Solid",    hint: "answered unaided" },
+  prompted: { w: 0.7,  label: "Prompted", hint: "got there with hints" },
+  shaky:    { w: 0.45, label: "Shaky",    hint: "partial or slow" },
+  learned:  { w: 0.3,  label: "Learned",  hint: "newly taught, untested" },
+  missed:   { w: 0.12, label: "Missed",   hint: "couldn't do it" },
+};
+
+/* Paste-into-the-voice-chat contract. Kept here so the site is the single
+   source of truth for the schema it parses. */
+const VOICE_PROMPT = [
+  "At the end of every session, output a JSON block in exactly this shape and nothing else inside it:",
+  "",
+  '{"deskprep_voice_session":1,',
+  ' "id":"js-YYYY-MM-DD-1",',
+  ' "date":"YYYY-MM-DD",',
+  ' "source":"jane-street-voice",',
+  ' "minutes":30,',
+  ' "skills":[',
+  '   {"topic":"prob2","label":"linearity of expectation","outcome":"solid","note":"one line of context"}',
+  " ]}",
+  "",
+  "topic must be exactly one of: " + TOPICS.map(t => t.id).join(", "),
+  "outcome must be exactly one of:",
+  ...Object.keys(VOICE_OUTCOMES).map(k => "  " + k + " = " + VOICE_OUTCOMES[k].hint),
+  "",
+  "One entry per distinct skill exercised. Keep label under 40 characters.",
+  "Give each session a unique id; re-emitting the same id overwrites that session rather than adding a duplicate.",
+].join("\n");
+
+/* Tolerant on the way in: the receipt is copied out of a chat, so it may
+   arrive fenced, quoted, or with prose wrapped around it. */
+function parseVoiceReceipt(text) {
+  const errors = [], warnings = [];
+  const raw = String(text || "").trim();
+  if (!raw) return { ok: false, errors: ["Nothing pasted."], warnings };
+  const a = raw.indexOf("{"), b = raw.lastIndexOf("}");
+  if (a < 0 || b <= a) return { ok: false, errors: ["No JSON object found in the pasted text."], warnings };
+  let d;
+  try { d = JSON.parse(raw.slice(a, b + 1)); }
+  catch (e) { return { ok: false, errors: ["That isn't valid JSON — " + e.message], warnings }; }
+
+  if (!Array.isArray(d.skills) || !d.skills.length)
+    return { ok: false, errors: ["Receipt has no `skills` array — nothing to record."], warnings };
+
+  const skills = [];
+  d.skills.forEach((sk, i) => {
+    const where = "skill " + (i + 1);
+    if (!sk || typeof sk !== "object") { errors.push(where + " is not an object."); return; }
+    const topic = String(sk.topic || "").trim();
+    const outcome = String(sk.outcome || "").trim().toLowerCase();
+    if (!TOPICS.some(t => t.id === topic)) { errors.push(where + ': unknown topic "' + topic + '".'); return; }
+    if (!VOICE_OUTCOMES[outcome]) { errors.push(where + ': unknown outcome "' + outcome + '".'); return; }
+    const label = String(sk.label || "").trim().slice(0, 80);
+    if (!label) warnings.push(where + " has no label.");
+    skills.push({ topic, outcome, label: label || "(unlabelled)", note: String(sk.note || "").trim().slice(0, 240) });
+  });
+  if (errors.length) return { ok: false, errors, warnings };
+
+  const parsed = Date.parse(String(d.date || "") + "T12:00:00");
+  const session = {
+    id: String(d.id || "").trim() || ("voice-" + Date.now()),
+    t: isNaN(parsed) ? Date.now() : parsed,
+    date: String(d.date || "").trim(),
+    source: String(d.source || "voice").trim().slice(0, 40),
+    minutes: Number(d.minutes) > 0 ? Math.round(Number(d.minutes)) : null,
+    skills,
+  };
+  return { ok: true, session, errors, warnings };
+}
+
+/* Replace-by-id, so re-importing a corrected receipt updates in place. */
+function mergeVoiceSession(v) {
+  if (!v || !v.id || !Array.isArray(v.skills)) return false;
+  const i = state.voiceSessions.findIndex(x => x.id === v.id);
+  const replaced = i >= 0;
+  if (replaced) state.voiceSessions[i] = v; else state.voiceSessions.push(v);
+  state.voiceSessions.sort((x, y) => x.t - y.t);
+  return replaced;
+}
+
+function voiceSkill(tid) {
+  let sum = 0, n = 0, last = 0;
+  const labels = [];
+  for (const sess of state.voiceSessions) {
+    for (const sk of sess.skills) {
+      if (sk.topic !== tid) continue;
+      const o = VOICE_OUTCOMES[sk.outcome];
+      if (!o) continue;
+      sum += o.w; n++;
+      if (sess.t > last) last = sess.t;
+      if (labels.length < 6 && !labels.includes(sk.label)) labels.push(sk.label);
+    }
+  }
+  return { score: n ? sum / n : null, count: n, last, labels };
+}
+
+/* Trading Floor games keep a personal best per (game, configuration), the way
+   the drills already do in state.drillBests. Keyed by config because a best
+   set at N=50/keep-5 says nothing about N=200/keep-20 — one leaderboard across
+   incomparable setups would just reward picking the easy one. Higher is always
+   better; games that want "lower is better" should negate before recording. */
+function recordGameBest(game, config, score, label) {
+  const key = game + ":" + config;
+  const prev = state.gameBests[key];
+  const isBest = !prev || score > prev.score;
+  if (isBest) state.gameBests[key] = { score, at: Date.now(), label: label || "" };
+  Store.save();
+  const r = v => Math.round(v * 100) / 100;
+  const html = isBest
+    ? `<div class="best-banner new">🏆 New best for ${esc(config)} — ${r(score)}${prev ? ` (was ${r(prev.score)})` : " (first run)"}</div>`
+    : `<div class="best-banner">Best for ${esc(config)}: ${r(prev.score)} · ${relTime(prev.at)}</div>`;
+  return { isBest, prev, html };
+}
+
+function gameBestsFor(game) {
+  return Object.entries(state.gameBests)
+    .filter(([k]) => k.startsWith(game + ":"))
+    .map(([k, v]) => ({ config: k.slice(game.length + 1), ...v }))
+    .sort((a, b) => b.at - a.at);
+}
+
+/* One chip row for a Trading Floor tile. Games keep bests in state.gameBests,
+   drills in state.drillBests — same idea, two stores, so this normalises them
+   for the hub rather than making either side move. */
+function floorBestChips(key, src) {
+  const rows = src === "game"
+    ? gameBestsFor(key).map(r => ({ config: r.config, score: r.score }))
+    : Object.entries(state.drillBests || {}).filter(([k]) => k.startsWith(key + ":"))
+        .map(([k, v]) => ({ config: k.slice(key.length + 1), score: v.score }));
+  if (!rows.length) return "";
+  return `<div class="g-bests">${rows.slice(0, 3).map(r =>
+    `<span class="best-chip">${esc(r.config)} · ${Math.round(r.score * 10) / 10}</span>`).join("")}</div>`;
+}
+
 function relTime(t) {
   const d = Date.now() - t;
   if (d < 60e3) return "just now";
@@ -1454,6 +1651,13 @@ function renderProgress() {
   };
   const algo = codeByMode("algo"), data = codeByMode("data");
   const recent = state.history.slice(-12).reverse();
+  const voice = TOPICS.map(t => ({ t, v: voiceSkill(t.id), cold: topicSkill(t.id) }))
+                      .filter(r => r.v.score !== null)
+                      .sort((a, b) => a.v.score - b.v.score);
+  const voiceCount = state.voiceSessions.reduce((n, s2) => n + s2.skills.length, 0);
+  const voiceLast = state.voiceSessions.length ? state.voiceSessions[state.voiceSessions.length - 1].t : 0;
+  // Talked through it but never tested it cold — the gap the split scoring exists to surface.
+  const untested = voice.filter(r => r.cold.attempted === 0);
 
   el.innerHTML = `
     <h1>Progress</h1>
@@ -1487,11 +1691,58 @@ function renderProgress() {
         </div>
 
         <div class="card mt16">
+          <h2>Voice sessions</h2>
+          <p class="small muted">Skills logged from spoken mocks, scored separately from the bank. What you can talk through with a human isn't what you can answer cold — the second column is the same topic tested here.</p>
+          <div class="row mt12" style="gap:12px">
+            <div class="stat-tile"><div class="k">Sessions</div><div class="v">${state.voiceSessions.length}</div></div>
+            <div class="stat-tile"><div class="k">Skills logged</div><div class="v">${voiceCount}</div></div>
+            <div class="stat-tile"><div class="k">Last session</div><div class="v">${voiceLast ? relTime(voiceLast) : "—"}</div></div>
+          </div>
+          ${voice.length ? `
+            <div class="skill-rows">
+              <div class="skill-row voice-row" style="margin-bottom:-2px">
+                <span class="small muted"></span><span></span>
+                <span class="small muted" style="font-size:10.5px; letter-spacing:.6px; text-transform:uppercase">voice</span>
+                <span class="small muted cold" style="font-size:10.5px; letter-spacing:.6px; text-transform:uppercase; text-align:right">tested</span>
+              </div>
+              ${voice.map(r => `
+                <div class="skill-row voice-row" title="${esc(r.v.labels.join(" · "))}">
+                  <span class="nm">${r.t.icon} ${esc(r.t.name.split("·")[0].trim())}</span>
+                  <div class="skill-track"><div class="skill-fill voice" style="width:${Math.round(r.v.score * 100)}%"></div></div>
+                  <span class="pct">${Math.round(r.v.score * 100)}% · ${r.v.count}</span>
+                  <span class="pct cold ${r.cold.score === null ? "untested" : ""}">${r.cold.score === null ? "untested" : Math.round(r.cold.score * 100) + "%"}</span>
+                </div>`).join("")}
+            </div>` : `<div class="muted small mt12">No sessions logged yet. Import a receipt below to start tracking.</div>`}
+
+          <details class="mt16">
+            <summary class="small" style="cursor:pointer; color:var(--ink-2)">Import a session receipt</summary>
+            <p class="small muted mt8">Paste the JSON block your voice interviewer emits at the end of a session. Fenced or wrapped in prose is fine — the parser finds the object.</p>
+            <textarea class="voice-io" id="vcIn" placeholder='{"deskprep_voice_session":1, "id":"js-2026-08-18-1", ...}' spellcheck="false"></textarea>
+            <div class="row mt8" style="gap:8px">
+              <button class="btn sm primary" id="vcAdd">Import session</button>
+              <button class="btn sm" id="vcPrompt">Copy the voice-chat prompt</button>
+            </div>
+            <div class="voice-msg" id="vcMsg"></div>
+          </details>
+
+          ${state.voiceSessions.length ? `<div class="mt16">
+            ${state.voiceSessions.slice().reverse().map(sess => `
+              <div class="sess-row">
+                <span class="when">${relTime(sess.t)}</span>
+                <span>${esc(sess.source)} · ${sess.skills.length} skill${sess.skills.length === 1 ? "" : "s"}${sess.minutes ? " · " + sess.minutes + "m" : ""}</span>
+                <button class="rm" data-rmsess="${esc(sess.id)}" title="Remove this session">×</button>
+              </div>`).join("")}
+          </div>` : ""}
+        </div>
+
+        <div class="card mt16">
           <h2>Focus next</h2>
           ${(() => {
             const recs = [];
             if (assessed.length && assessed[0].score < 0.7)
               recs.push(`Your weakest assessed topic is <b>${esc(assessed[0].t.name)}</b> (${Math.round(assessed[0].score*100)}%) — drill it before adding new topics.`);
+            if (untested.length)
+              recs.push(`Logged in voice but never tested cold: ${untested.map(r => `<b>${esc(r.t.name.split("·")[0].trim())}</b>`).join(", ")} — talking it through is the easy half; drill it here to confirm.`);
             if (queue.length >= 3)
               recs.push(`${queue.length} questions sit in your review queue — clear those first; re-solving misses is the highest-yield 20 minutes in interview prep.`);
             if (untouched.length)
@@ -1541,12 +1792,37 @@ function renderProgress() {
           <div class="mt8">
             ${recent.length ? recent.map(h => {
               const name = h.kind === "q" ? (QUESTIONS.find(q => q.id === h.id) || {}).title
+                : h.kind === "voice" ? h.id
                 : h.kind === "drill" ? ({ mm: "Mental math drill", seq: "Sequence drill", fermi: "Fermi drill" })[h.id]
                 : (CODING_PROBLEMS.find(p => p.id === h.id) || {}).title;
               return `<div class="act-row"><span class="when">${relTime(h.t)}</span><span style="color:${h.ok ? "var(--good)" : "var(--critical)"}">${h.ok ? "✓" : "✗"}</span><span>${esc(name || h.id)}</span></div>`;
             }).join("") : `<div class="muted small">Nothing yet.</div>`}
           </div>
         </div>
+        <div class="card mt16">
+          <h3>Trading Floor bests</h3>
+          <p class="small muted">Per configuration — a best at N=50/keep-3 says nothing about N=200/keep-10, so they don't share a leaderboard.</p>
+          ${(() => {
+            const rows = [
+              ...Object.entries(state.gameBests).map(([k, v]) => {
+                const g = k.slice(0, k.indexOf(":"));
+                return { game: ({ hs: "🎴 High Show", br: "♠ Black − Red" })[g] || g,
+                         config: k.slice(g.length + 1), score: v.score, unit: v.label || "", at: v.at };
+              }),
+              ...Object.entries(state.drillBests).map(([k, v]) => {
+                const g = k.slice(0, k.indexOf(":"));
+                return { game: ({ mm: "⚡ Mental Math", seq: "🔢 Sequences", fermi: "🧮 Fermi" })[g] || g,
+                         config: k.slice(g.length + 1), score: v.score, unit: "score", at: 0 };
+              }),
+            ].sort((a, b) => a.game.localeCompare(b.game) || a.config.localeCompare(b.config));
+            return rows.length ? `<div class="mt8">${rows.map(r => `
+              <div class="act-row"><span style="min-width:120px">${esc(r.game)}</span>
+                <span class="muted small">${esc(r.config)}</span>
+                <span style="margin-left:auto; font-family:var(--mono); font-weight:650">${Math.round(r.score * 10) / 10}${r.unit === "efficiency %" ? "%" : ""}</span></div>`).join("")}</div>`
+              : `<div class="muted small mt8">Nothing yet — the Trading Floor records a best per game and setup.</div>`;
+          })()}
+        </div>
+
         <div class="card mt16">
           <h3>Progress data</h3>
           <div class="row mt8" style="gap:8px">
@@ -1572,8 +1848,37 @@ function renderProgress() {
     if (e.target.files[0]) Store.importJson(e.target.files[0], ok => { renderProgress(); updatePill(); });
   });
   $("#rstBtn").addEventListener("click", () => {
-    if (confirm("Wipe all progress (ratings, answers, coding status, PnL)?")) { Store.reset(); renderProgress(); updatePill(); }
+    if (confirm("Wipe all progress (ratings, answers, coding status, PnL, voice sessions)?")) { Store.reset(); renderProgress(); updatePill(); }
   });
+  $("#vcAdd").addEventListener("click", () => {
+    const msg = $("#vcMsg");
+    const res = parseVoiceReceipt($("#vcIn").value);
+    if (!res.ok) { msg.className = "voice-msg bad"; msg.innerHTML = res.errors.map(esc).join("<br>"); return; }
+    const replaced = mergeVoiceSession(res.session);
+    state.history.push({ t: Date.now(), kind: "voice", id: res.session.source + " · " + res.session.skills.length + " skills", ok: true });
+    Store.save();
+    const warn = res.warnings.length ? " (" + res.warnings.length + " warning" + (res.warnings.length === 1 ? "" : "s") + ")" : "";
+    renderProgress();
+    const m2 = $("#vcMsg");
+    m2.className = "voice-msg " + (res.warnings.length ? "warn" : "good");
+    m2.textContent = (replaced ? "Updated" : "Imported") + " " + res.session.skills.length + " skill" +
+      (res.session.skills.length === 1 ? "" : "s") + " from " + res.session.source + "." + warn;
+    m2.closest("details").open = true;
+  });
+  $("#vcPrompt").addEventListener("click", () => {
+    const msg = $("#vcMsg");
+    const done = ok => { msg.className = "voice-msg " + (ok ? "good" : "bad");
+      msg.textContent = ok ? "Prompt copied — paste it into your voice chat." : "Couldn't copy; the prompt is in the README."; };
+    if (navigator.clipboard) navigator.clipboard.writeText(VOICE_PROMPT).then(() => done(true), () => done(false));
+    else done(false);
+  });
+  $$("[data-rmsess]", el).forEach(b => b.addEventListener("click", () => {
+    const sess = state.voiceSessions.find(v => v.id === b.dataset.rmsess);
+    if (!sess) return;
+    if (!confirm("Remove this session (" + sess.skills.length + " skills)?")) return;
+    state.voiceSessions = state.voiceSessions.filter(v => v.id !== b.dataset.rmsess);
+    Store.save(); renderProgress();
+  }));
 }
 /* ============================================================
    p4_coding.js — part 4 of 6. The coding tab: problems, Python, and the coach.
@@ -2852,6 +3157,100 @@ const HighShow = {
     }
   },
 
+  /* ---- Reference policy ---------------------------------------------------
+     "Beat take-the-first-M" is a very low bar, so it says little about play.
+     This builds an actual optimal-stopping policy by backward induction and
+     then measures it honestly.
+
+     buildPolicy() solves V[r][m] = expected total with r cards still to see
+     and m picks left, integrating over the deck's value distribution:
+         V[r][m] = E_v[ max( v + V[r-1][m-1],  V[r-1][m] − penalty(v, i) ) ]
+     with i = N−r+1 the turn index, and the skip branch dropped when r−1 < m
+     (too few cards left to reject any more). The expectation treats each card
+     as an iid draw from the deck, which is not exactly true — the deck is
+     dealt without replacement — so the TABLE is an approximation.
+
+     referenceScore() therefore does not trust the table's own value. It
+     re-runs the induced accept/reject rule over real shuffles of the real
+     deck, which is sampling without replacement, and averages the realised
+     net. The result is an unbiased estimate of what this policy actually
+     scores on your configuration.
+
+     With NO penalty the answer is exact and needs no search at all: rejecting
+     is free, so taking a card only when it ranks in the top m of what is left
+     secures the M highest cards of the deck every time. referenceFor() returns
+     that closed form and skips the DP. (Verified against a brute-force solver
+     over all orderings for small decks: 19.0 / 31.0 / 25.0 on N7M1, N7M2,
+     N16M1 — exactly the top-M sums.)
+
+     With a penalty the DP is used, and it is NEAR-optimal rather than optimal:
+     brute force puts it within 0.0–1.9% on small decks, the shortfall coming
+     from the iid approximation. So an efficiency a shade over 100% means you
+     matched it, not that the meter broke.
+
+     Either way the policy knows K. That makes it a ceiling rather than a fair
+     opponent: it never had to do the inference half of the game.  */
+  /* Exact when rejecting is free, DP-and-simulate otherwise. Returns the
+     score plus whether it is exact, so the write-up can say which. */
+  referenceFor() {
+    if (this.penType === "none") {
+      let top = 0;
+      for (let j = 0; j < this.M; j++) top += this.K + this.N - 1 - j;
+      return { score: top, exact: true, sims: 0 };
+    }
+    const sims = this.N > 150 ? 800 : 2000;
+    return { score: this.referenceScore(this.buildPolicy(), sims), exact: false, sims };
+  },
+
+  buildPolicy() {
+    const N = this.N, M = this.M;
+    // O(N² · M · nv) cell updates; subsample the value grid rather than hang
+    // the tab on a 300-card deck with a large keep count.
+    const stride = Math.max(1, Math.ceil((N * N * M) / 1.2e7));
+    const vals = [];
+    for (let j = 0; j < N; j += stride) vals.push(this.K + j);
+    const nv = vals.length;
+    const W = M + 1;
+    const V = new Float64Array((N + 1) * W);
+    for (let r = 1; r <= N; r++) {
+      const i = N - r + 1;
+      const top = Math.min(M, r);
+      for (let m = 1; m <= top; m++) {
+        const contTake = V[(r - 1) * W + (m - 1)];
+        const contSkip = V[(r - 1) * W + m];
+        const mustTake = (r - 1) < m;
+        let acc = 0;
+        for (let z = 0; z < nv; z++) {
+          const v = vals[z];
+          const take = v + contTake;
+          acc += mustTake ? take : Math.max(take, contSkip - this.penFor(v, i));
+        }
+        V[r * W + m] = acc / nv;
+      }
+    }
+    return { V, W };
+  },
+
+  referenceScore(pol, sims) {
+    const N = this.N, M = this.M, W = pol.W, V = pol.V;
+    const base = Array.from({ length: N }, (_, j) => this.K + j);
+    let tot = 0;
+    for (let s = 0; s < sims; s++) {
+      const ord = shuffleArr(base.slice());
+      let m = M, gain = 0, pen = 0;
+      for (let t = 1; t <= N && m > 0; t++) {
+        const r = N - t + 1;                       // cards left including this one
+        const v = ord[t - 1];
+        const take = v + V[(r - 1) * W + (m - 1)];
+        const skip = V[(r - 1) * W + m] - this.penFor(v, t);
+        if ((r - 1) < m || take >= skip) { gain += v; m--; }
+        else pen += this.penFor(v, t);
+      }
+      tot += gain - pen;
+    }
+    return tot / sims;
+  },
+
   renderTurn() {
     this.turn++;
     const cur = this.order[this.turn - 1];
@@ -2914,11 +3313,16 @@ const HighShow = {
     const net = Math.round((gain - pen) * 100) / 100;
     const par = this.M * (this.K + (this.N - 1) / 2);      // EV of taking the first M cards, no rejects
     const skill = net - par;
+    const refInfo = this.referenceFor();
+    const ref = refInfo.score;
+    const eff = ref > 0 ? net / ref : null;                // % of reference achieved
     const kOk = estK === this.K, kNear = Math.abs(estK - this.K) <= 2;
     const pOk = Number.isFinite(estP) && Math.abs(estP - net) <= Math.max(5, 0.05 * Math.abs(net));
     const bonus = (kOk ? 25 : kNear ? 10 : 0) + (pOk ? 15 : 0);
     const session = Math.round(skill + bonus);
     addPnl(session);
+    const best = eff === null ? { html: "" }
+      : recordGameBest("hs", `N${this.N}/keep${this.M}/${this.penType}`, Math.round(eff * 1000) / 10, "efficiency %");
     $("#hsStage").innerHTML = `
       <div class="result-banner">
         <h3>K was <span class="mono">${this.K}</span> — deck ran ${this.K} … ${this.K + this.N - 1}</h3>
@@ -2927,14 +3331,24 @@ const HighShow = {
           <div class="stat-tile"><div class="k">Penalty</div><div class="v ${pen > 0 ? "neg" : ""}">−${pen}</div></div>
           <div class="stat-tile"><div class="k">Net P&L</div><div class="v ${net > 0 ? "pos" : "neg"}">${net}</div></div>
           <div class="stat-tile"><div class="k">Naive baseline</div><div class="v">${Math.round(par * 10) / 10}</div></div>
+          <div class="stat-tile"><div class="k">${refInfo.exact ? "Optimal play" : "Reference policy"}</div><div class="v">${Math.round(ref * 10) / 10}</div></div>
+          <div class="stat-tile"><div class="k">Efficiency</div><div class="v ${eff === null ? "" : eff >= 0.98 ? "pos" : eff < 0.85 ? "neg" : ""}">${eff === null ? "—" : Math.round(eff * 1000) / 10 + "%"}</div></div>
           <div class="stat-tile"><div class="k">Skill vs naive</div><div class="v ${skill > 0 ? "pos" : skill < 0 ? "neg" : ""}">${skill > 0 ? "+" : ""}${Math.round(skill * 10) / 10}</div></div>
           <div class="stat-tile"><div class="k">Session PnL</div><div class="v ${session > 0 ? "pos" : session < 0 ? "neg" : ""}">${fmtMoney(session)}</div></div>
         </div>
+        ${best.html}
         <div class="small mt8" style="color:var(--ink-2); display:flex; flex-direction:column; gap:6px">
           <div>• K estimate ${estK || estK === 0 ? estK : "—"}: ${kOk ? "✓ exact (+25)" : kNear ? "≈ within 2 (+10)" : "✗ off by " + Math.abs(estK - this.K)}.
-            Your best evidence was the ${this.turn} card values you saw — min seen ${Math.min(...this.order.slice(0, this.turn))}, and E[min of ${this.turn} draws] ≈ K + (N−${this.turn ? this.turn : 1}·spacing)… the minimum you observed overshoots K by about N/${this.turn + 1}.</div>
+            Your evidence was the ${this.turn} values you saw; the smallest was ${Math.min(...this.order.slice(0, this.turn))}. The minimum of ${this.turn} draws from a run of ${this.N}
+            sits above K by about (N−1)/(t+1) = ${Math.round(10 * (this.N - 1) / (this.turn + 1)) / 10} on average, so subtracting that from your lowest card is the estimator —
+            it lands at ${Math.round(Math.min(...this.order.slice(0, this.turn)) - (this.N - 1) / (this.turn + 1))}.</div>
           <div>• P&L estimate ${Number.isFinite(estP) ? estP : "—"}: ${pOk ? "✓ within tolerance (+15)" : "✗ actual was " + net}.${this.multHidden ? " The hidden multiplier was 2(N+K)/(N+4) = " + (Math.round(this.mult * 100) / 100) + "." : ""}</div>
-          <div>• Baseline is taking the first ${this.M} cards blind: EV = M × (K + (N−1)/2) = ${Math.round(par * 10) / 10}. Beating it means your accept/reject thresholds earned more than the penalties cost.</div>
+          <div>• Naive baseline is taking the first ${this.M} cards blind: EV = M × (K + (N−1)/2) = ${Math.round(par * 10) / 10}. Clearing it only means you did something rather than nothing.</div>
+          <div>• <b>The real bar is ${Math.round(ref * 10) / 10}</b> — ${refInfo.exact
+              ? `exactly optimal play. With no penalty, rejecting costs nothing, so accepting only when a card ranks in the top m of what remains secures the ${this.M} highest cards (${this.K + this.N - 1} down to ${this.K + this.N - this.M}) every single time.`
+              : `a near-optimal policy, from backward induction over V[r][m] = E[max(take, skip − penalty)] measured across ${refInfo.sims} real shuffles of this deck. It sits within about 2% of true optimal, so a shade over 100% means you matched it.`} You reached
+            ${eff === null ? "—" : Math.round(eff * 1000) / 10 + "%"} of it${eff === null ? "" : eff >= 0.98 ? " — that is optimal play." : eff >= 0.9 ? " — solid, the gap is a few marginal accepts." : " — there is real money in your thresholds."}.
+            That policy knows K, so it skips the inference you had to do; treat it as the ceiling, not the par.</div>
           <div>• Strategy shape: with m picks left and r cards remaining, accept a card in roughly the top m/r fraction of the values you believe remain — and every penalty lowers that bar. Early rejects are cheap information about K; late rejects are expensive.</div>
         </div>
         <div class="row mt16"><button class="btn primary" id="hsAgain">Play again</button></div>
@@ -2963,34 +3377,45 @@ const BlackRed = {
       <h2 class="mt16">♠ Black − Red</h2>
       <p class="lede">Everyone — you and each bot — is dealt 2 hidden cards; 5 board cards reveal poker-style
       (pre-flop → flop → turn → river). The contract settles to <b>Σ black ranks − Σ red ranks over every card dealt</b>
-      (A=1 … K=13; clubs/spades +, hearts/diamonds −). Each street you quote a two-sided market and the bots trade
-      1 lot against it. At the end you compute the true value and estimate your own PnL before settlement.</p>
+      (A=1 … K=13; clubs/spades +, hearts/diamonds −). Each street you quote a two-sided market <b>with size</b>, and
+      bots take as much of it as their edge justifies. Carry position and you pay a risk charge every street.</p>
       <div class="card mt16">
-        <div class="row" style="gap:16px; align-items:flex-end">
+        <div class="settings-grid">
           <div class="quote-field"><label>Bots</label>
             <select id="brBots"><option>2</option><option selected>3</option><option>4</option><option>5</option></select></div>
-          <button class="btn primary" id="brStart">Deal →</button>
+          <div class="quote-field"><label>Max size per side</label>
+            <input type="number" id="brMax" value="5" min="1" max="20"></div>
+          <div class="quote-field"><label>Position limit</label>
+            <input type="number" id="brLim" value="10" min="1" max="50"></div>
+          <div class="quote-field"><label>Risk charge <span class="muted">/lot/street</span></label>
+            <input type="number" id="brInv" value="0.5" min="0" max="5" step="0.1"></div>
         </div>
-        <div class="small muted mt8">Tip: the full deck sums to zero, so E[unseen card] is pinned down by what you can see.
-        A tight quote pre-flop, when ${""}everyone's information edge is at its largest relative to yours, is how you get picked off.</div>
+        <div class="row mt12"><button class="btn primary" id="brStart">Deal →</button></div>
+        <div class="small muted mt8">Size is the whole game. The deck sums to zero, so E[unseen card] = −(sum you can see)/(cards you can't) —
+        but a bot only lifts your offer in size when it is <i>confident</i>, and every lot it takes is a lot you were wrong about.
+        Quoting 5-up pre-flop, when everyone's information edge over you is at its largest, is how you get run over.</div>
       </div>
       <div id="brStage"></div>`;
     Floor.bindBack();
-    $("#brStart").addEventListener("click", () => this.newGame(+$("#brBots").value));
+    $("#brStart").addEventListener("click", () => this.newGame());
   },
 
-  newGame(nb) {
+  newGame() {
     const deck = [];
     for (const [suit, red] of [["♠", false], ["♣", false], ["♥", true], ["♦", true]])
       for (let r = 1; r <= 13; r++)
         deck.push({ r, suit, red, v: red ? -r : r, label: ({ 1: "A", 11: "J", 12: "Q", 13: "K" }[r] || String(r)) });
     shuffleArr(deck);
+    const nb = +$("#brBots").value;
+    this.maxSize = clamp(Math.round(+$("#brMax").value || 5), 1, 20);
+    this.posLimit = clamp(Math.round(+$("#brLim").value || 10), 1, 50);
+    this.invRate = clamp(+$("#brInv").value || 0, 0, 5);
     this.you = deck.splice(0, 2);
     const pool = shuffleArr(this.STYLES.slice());
     this.bots = Array.from({ length: nb }, (_, i) => ({ id: i + 1, cards: deck.splice(0, 2), style: pool[i % pool.length] }));
     this.board = deck.splice(0, 5);
     this.trueV = [...this.you, ...this.board, ...this.bots.flatMap(b => b.cards)].reduce((a, c) => a + c.v, 0);
-    this.phase = 0; this.tape = []; this.trades = []; this.cash = 0; this.pos = 0;
+    this.phase = 0; this.tape = []; this.trades = []; this.cash = 0; this.pos = 0; this.invCost = 0;
     this.renderPhase();
   },
 
@@ -3003,13 +3428,16 @@ const BlackRed = {
     const nRev = this.REVEAL[this.phase];
     const youSum = this.you.reduce((a, c) => a + c.v, 0);
     const boardSum = this.board.slice(0, nRev).reduce((a, c) => a + c.v, 0);
+    const room = { buy: this.posLimit - this.pos, sell: this.posLimit + this.pos };
     $("#brStage").innerHTML = `
       <div class="card mt16">
         <div class="row spread">
           <h3>${this.PHASES[this.phase]} — make your market</h3>
           <div class="stat-tiles">
-            <div class="stat-tile"><div class="k">Position</div><div class="v">${this.pos > 0 ? "+" : ""}${this.pos}</div></div>
-            <div class="stat-tile"><div class="k">Trades</div><div class="v">${this.trades.length}</div></div>
+            <div class="stat-tile"><div class="k">Position</div><div class="v ${this.pos > 0 ? "pos" : this.pos < 0 ? "neg" : ""}">${this.pos > 0 ? "+" : ""}${this.pos}</div><div class="k">limit ±${this.posLimit}</div></div>
+            <div class="stat-tile"><div class="k">Cash</div><div class="v ${this.cash > 0 ? "pos" : this.cash < 0 ? "neg" : ""}">${Math.round(this.cash * 10) / 10}</div></div>
+            <div class="stat-tile"><div class="k">Risk charge</div><div class="v ${this.invCost > 0 ? "neg" : ""}">−${Math.round(this.invCost * 10) / 10}</div></div>
+            <div class="stat-tile"><div class="k">Lots done</div><div class="v">${this.trades.reduce((a, t) => a + t.qty, 0)}</div></div>
           </div>
         </div>
         <div class="row mt16" style="gap:26px; flex-wrap:wrap">
@@ -3022,42 +3450,84 @@ const BlackRed = {
         </div>
         <div class="quote-panel">
           <div class="quote-field"><label>Your bid</label><input type="number" step="any" class="bid-in" id="brBid"></div>
+          <div class="quote-field"><label>Bid size <span class="muted">(buy up to ${Math.max(0, room.buy)})</span></label>
+            <input type="number" class="bid-in" id="brBidSz" value="1" min="0" max="${this.maxSize}"></div>
           <div class="quote-field"><label>Your ask</label><input type="number" step="any" class="ask-in" id="brAsk"></div>
+          <div class="quote-field"><label>Ask size <span class="muted">(sell up to ${Math.max(0, room.sell)})</span></label>
+            <input type="number" class="ask-in" id="brAskSz" value="1" min="0" max="${this.maxSize}"></div>
           <button class="btn primary" id="brQuote" style="align-self:flex-end">Quote it →</button>
           <span class="small" id="brErr" style="color:var(--critical); align-self:flex-end"></span>
         </div>
+        <div class="small muted mt8">Max ${this.maxSize} per side. Fills stop at the position limit, and you are charged
+        ${this.invRate} per lot of |position| at the end of every street.</div>
       </div>
       <div class="card mt16 pad-sm"><div class="tape" id="brTape">${this.tape.join("") || `<span class="t-info">The tape is empty — quote and the bots will act.</span>`}</div></div>`;
     const tp = $("#brTape"); tp.scrollTop = tp.scrollHeight;
     $("#brQuote").addEventListener("click", () => this.submit());
-    $("#brAsk").addEventListener("keydown", e => { if (e.key === "Enter") this.submit(); });
+    $$("#brStage input").forEach(el => el.addEventListener("keydown", e => { if (e.key === "Enter") this.submit(); }));
     $("#brBid").focus();
+  },
+
+  /* A bot's fair value: everything it can see, plus the unseen dealt cards
+     marked at the conditional mean implied by the deck summing to zero. */
+  botEV(b, nRev) {
+    const seen = [...b.cards, ...this.board.slice(0, nRev)];
+    const seenSum = seen.reduce((a, c) => a + c.v, 0);
+    const unseenDealt = 2 + 2 * (this.bots.length - 1) + (5 - nRev);
+    return seenSum + unseenDealt * (0 - seenSum) / (52 - seen.length) + b.style.noise * randn();
   },
 
   submit() {
     const bid = +$("#brBid").value, ask = +$("#brAsk").value;
+    const bidSz = Math.round(+$("#brBidSz").value), askSz = Math.round(+$("#brAskSz").value);
     if (!Number.isFinite(bid) || !Number.isFinite(ask) || !(ask > bid)) {
       $("#brErr").textContent = "Need bid < ask, both numbers."; return;
     }
+    if (!Number.isFinite(bidSz) || !Number.isFinite(askSz) || bidSz < 0 || askSz < 0 || bidSz > this.maxSize || askSz > this.maxSize) {
+      $("#brErr").textContent = `Sizes must be between 0 and ${this.maxSize}.`; return;
+    }
+    if (!bidSz && !askSz) { $("#brErr").textContent = "Quote size on at least one side."; return; }
+
     const ph = this.PHASES[this.phase], nRev = this.REVEAL[this.phase];
-    this.tape.push(`<div class="t-me">[${ph}] you quote ${bid} / ${ask}</div>`);
-    for (const b of this.bots) {
-      const revealed = this.board.slice(0, nRev);
-      const seen = [...b.cards, ...revealed];
-      const seenSum = seen.reduce((a, c) => a + c.v, 0);
-      const unseenDealt = 2 + 2 * (this.bots.length - 1) + (5 - nRev);
-      const ev = seenSum + unseenDealt * (0 - seenSum) / (52 - seen.length) + b.style.noise * randn();
-      if (ev > ask + b.style.t) {
-        this.trades.push({ bot: b, side: "buy", px: ask, phase: ph });
-        this.cash += ask; this.pos -= 1;
-        this.tape.push(`<div class="t-buy">[${ph}] bot ${b.id} · ${b.style.n} BUYS 1 @ ${ask}</div>`);
-      } else if (ev < bid - b.style.t) {
-        this.trades.push({ bot: b, side: "sell", px: bid, phase: ph });
-        this.cash -= bid; this.pos += 1;
-        this.tape.push(`<div class="t-sell">[${ph}] bot ${b.id} · ${b.style.n} SELLS 1 @ ${bid}</div>`);
+    this.tape.push(`<div class="t-me">[${ph}] you quote ${bidSz} @ ${bid} / ${ask} @ ${askSz}</div>`);
+
+    // Size left on each side of YOUR quote; bots consume it in random order so
+    // that no bot is structurally first in line to the good fills.
+    let bidLeft = bidSz, askLeft = askSz;
+    for (const b of shuffleArr(this.bots.slice())) {
+      const ev = this.botEV(b, nRev);
+      const buyEdge = ev - ask - b.style.t;    // bot lifts your offer -> you go short
+      const sellEdge = bid - ev - b.style.t;   // bot hits your bid     -> you go long
+      const scale = Math.max(b.style.t, 0.5);
+      if (buyEdge > 0 && askLeft > 0) {
+        const room = this.posLimit + this.pos;                       // lots you may still sell
+        const qty = Math.min(Math.ceil(buyEdge / scale), askLeft, room);
+        if (qty > 0) {
+          this.trades.push({ bot: b, side: "buy", px: ask, qty, phase: ph });
+          this.cash += ask * qty; this.pos -= qty; askLeft -= qty;
+          this.tape.push(`<div class="t-buy">[${ph}] bot ${b.id} · ${b.style.n} BUYS ${qty} @ ${ask}</div>`);
+        } else if (room <= 0) {
+          this.tape.push(`<div class="t-warn">[${ph}] bot ${b.id} wanted your offer — position limit blocked it</div>`);
+        }
+      } else if (sellEdge > 0 && bidLeft > 0) {
+        const room = this.posLimit - this.pos;                       // lots you may still buy
+        const qty = Math.min(Math.ceil(sellEdge / scale), bidLeft, room);
+        if (qty > 0) {
+          this.trades.push({ bot: b, side: "sell", px: bid, qty, phase: ph });
+          this.cash -= bid * qty; this.pos += qty; bidLeft -= qty;
+          this.tape.push(`<div class="t-sell">[${ph}] bot ${b.id} · ${b.style.n} SELLS ${qty} @ ${bid}</div>`);
+        } else if (room <= 0) {
+          this.tape.push(`<div class="t-warn">[${ph}] bot ${b.id} wanted to hit your bid — position limit blocked it</div>`);
+        }
       } else {
         this.tape.push(`<div class="t-info">[${ph}] bot ${b.id} · ${b.style.n} passes</div>`);
       }
+    }
+
+    const charge = Math.abs(this.pos) * this.invRate;
+    if (charge > 0) {
+      this.invCost += charge;
+      this.tape.push(`<div class="t-warn">[${ph}] carry ${this.pos > 0 ? "+" : ""}${this.pos} overnight — risk charge ${Math.round(charge * 100) / 100}</div>`);
     }
     this.phase++;
     if (this.phase < 4) this.renderPhase(); else this.endForm();
@@ -3073,10 +3543,11 @@ const BlackRed = {
           ${this.bots.map(b => `<div><div class="small muted">bot ${b.id} · ${b.style.n}</div>
             <div class="card-row mt8">${b.cards.map(c => this.cardHTML(c)).join("")}</div></div>`).join("")}
         </div>
-        <p class="small muted mt16">Two questions before settlement — do the arithmetic, don't eyeball it:</p>
+        <p class="small muted mt16">You are carrying <b>${this.pos > 0 ? "+" : ""}${this.pos}</b> into settlement and have paid
+        <b>${Math.round(this.invCost * 100) / 100}</b> in risk charges. Two questions — do the arithmetic, don't eyeball it:</p>
         <div class="quote-panel">
           <div class="quote-field"><label>True value (Σ black − Σ red)</label><input type="number" id="brEstV"></div>
-          <div class="quote-field"><label>Your PnL estimate</label><input type="number" step="any" id="brEstP"></div>
+          <div class="quote-field"><label>Your PnL estimate <span class="muted">(after charges)</span></label><input type="number" step="any" id="brEstP"></div>
           <button class="btn primary" id="brSettle" style="align-self:flex-end">Settle →</button>
         </div>
       </div>
@@ -3089,31 +3560,43 @@ const BlackRed = {
     const estV = Math.round(+$("#brEstV").value);
     const estP = +$("#brEstP").value;
     const V = this.trueV;
-    const pnl = Math.round((this.cash + this.pos * V) * 100) / 100;
+    const gross = this.cash + this.pos * V;
+    const pnl = Math.round((gross - this.invCost) * 100) / 100;
     addPnl(Math.round(pnl));
-    const perTrade = this.trades.map(t => ({ ...t, pnl: t.side === "buy" ? t.px - V : V - t.px }));
+    const lots = this.trades.reduce((a, t) => a + t.qty, 0);
+    const perTrade = this.trades.map(t => ({ ...t, pnl: (t.side === "buy" ? t.px - V : V - t.px) * t.qty }));
     const vsPunter = perTrade.filter(t => t.bot.style.n === "punter").reduce((a, t) => a + t.pnl, 0);
     const vsSharp = perTrade.filter(t => t.bot.style.n !== "punter").reduce((a, t) => a + t.pnl, 0);
+    const edgePerLot = lots ? (gross / lots) : 0;
     const vOk = estV === V;
-    const pOk = Number.isFinite(estP) && Math.abs(estP - pnl) <= 5;
+    const pOk = Number.isFinite(estP) && Math.abs(estP - pnl) <= Math.max(5, 0.1 * Math.abs(pnl));
+    const best = recordGameBest("br", `${this.bots.length}b/${this.maxSize}up`, pnl, "PnL");
     $("#brStage").innerHTML = `
       <div class="result-banner">
         <h3>True value: <span class="mono">${V > 0 ? "+" : ""}${V}</span></h3>
         <div class="row mt8" style="gap:8px; flex-wrap:wrap">
-          <div class="stat-tile"><div class="k">Your PnL</div><div class="v ${pnl > 0 ? "pos" : pnl < 0 ? "neg" : ""}">${fmtMoney(pnl)}</div></div>
+          <div class="stat-tile"><div class="k">Net PnL</div><div class="v ${pnl > 0 ? "pos" : pnl < 0 ? "neg" : ""}">${fmtMoney(pnl)}</div></div>
+          <div class="stat-tile"><div class="k">Trading gross</div><div class="v ${gross > 0 ? "pos" : gross < 0 ? "neg" : ""}">${fmtMoney(gross)}</div></div>
+          <div class="stat-tile"><div class="k">Risk charges</div><div class="v ${this.invCost > 0 ? "neg" : ""}">−${Math.round(this.invCost * 100) / 100}</div></div>
+          <div class="stat-tile"><div class="k">Lots traded</div><div class="v">${lots}</div></div>
+          <div class="stat-tile"><div class="k">Edge per lot</div><div class="v ${edgePerLot > 0 ? "pos" : edgePerLot < 0 ? "neg" : ""}">${lots ? (Math.round(edgePerLot * 100) / 100) : "—"}</div></div>
           <div class="stat-tile"><div class="k">Final position</div><div class="v">${this.pos > 0 ? "+" : ""}${this.pos}</div></div>
           <div class="stat-tile"><div class="k">vs punter flow</div><div class="v ${vsPunter > 0 ? "pos" : vsPunter < 0 ? "neg" : ""}">${fmtMoney(vsPunter)}</div></div>
           <div class="stat-tile"><div class="k">vs sharper flow</div><div class="v ${vsSharp > 0 ? "pos" : vsSharp < 0 ? "neg" : ""}">${fmtMoney(vsSharp)}</div></div>
         </div>
+        ${best.html}
         <div class="small mt8" style="color:var(--ink-2); display:flex; flex-direction:column; gap:6px">
           <div>• True value ${Number.isFinite(estV) ? estV : "—"}: ${vOk ? "✓ exact." : "✗ it was " + V + " — settlement arithmetic has to be automatic."}</div>
-          <div>• PnL estimate ${Number.isFinite(estP) ? estP : "—"}: ${pOk ? "✓ within ±5." : "✗ actual " + pnl + ". Track cash and position street by street: PnL = cash + position × value."}</div>
-          <div>• The decomposition is the lesson: profit against punters, losses against sharp/tight flow means your quotes leaked
-          information value. Bots know 2 cards you can't see — their willingness to trade IS information; move your market when
-          they hit you, and note the deck sums to zero, so E[each unseen card] = −(sum you can see)/(cards you can't).</div>
+          <div>• PnL estimate ${Number.isFinite(estP) ? estP : "—"}: ${pOk ? "✓ close enough." : "✗ actual " + pnl + ". PnL = cash + position × value − risk charges."}</div>
+          <div>• <b>Edge per lot</b> is the number that matters, not gross: ${lots ? "you traded " + lots + " lots for " + (Math.round(edgePerLot * 100) / 100) + " each" : "you traded nothing"}.
+          Trading more lots at a thinner edge is how a book blows up quietly.</div>
+          <div>• The decomposition is the lesson: profit against punters and losses against sharp/tight flow means your size was
+          available to exactly the people who knew something. Bots take size in proportion to their edge — so a big fill is bad
+          news, and the right response is to move your market, not to repeat the quote.</div>
+          ${this.invCost > 0 ? `<div>• You paid ${Math.round(this.invCost * 100) / 100} to carry inventory. Flat at the end of each street costs nothing; a position you keep because you like it has to earn its charge.</div>` : ""}
         </div>
         ${perTrade.length ? `<div class="mt16" style="max-height:180px; overflow-y:auto">
-          ${perTrade.map(t => `<div class="rev-row"><span>[${t.phase}] bot ${t.bot.id} · ${t.bot.style.n} ${t.side === "buy" ? "bought" : "sold"}</span>
+          ${perTrade.map(t => `<div class="rev-row"><span>[${t.phase}] bot ${t.bot.id} · ${t.bot.style.n} ${t.side === "buy" ? "bought" : "sold"} ${t.qty}</span>
             <span>@ ${t.px}</span><span></span>
             <span style="color:${t.pnl > 0 ? "var(--good)" : t.pnl < 0 ? "var(--critical)" : "var(--ink-muted)"}">${t.pnl > 0 ? "+" : ""}${Math.round(t.pnl * 100) / 100}</span></div>`).join("")}
         </div>` : `<p class="small muted mt8">No bot traded — your markets were wide enough to be safe and too wide to learn anything.</p>`}
@@ -3188,6 +3671,10 @@ function drillSettingsHTML(o) {
       <select id="dsAnsFmt"><option value="type">Typing in</option><option value="mc">Multiple choice</option></select></div>`}
     <div class="quote-field"><label>Allow skips</label>
       <select id="dsSkip"><option value="1">Enabled</option><option value="0">Disabled</option></select></div>
+    <div class="quote-field"><label>Retry misses</label>
+      <select id="dsRetry"><option value="1" selected>Enabled</option><option value="0">Disabled</option></select></div>
+    ${o.noAdapt ? "" : `<div class="quote-field"><label>Difficulty</label>
+      <select id="dsAdapt"><option value="0">Fixed by mode</option><option value="1">Adaptive — ramps with you</option></select></div>`}
     ${o.noMove ? "" : `<div class="quote-field"><label>Movement</label>
       <select id="dsMove"><option value="enter">Press Enter</option><option value="auto">Auto-advance</option></select></div>
     <div class="quote-field"><label>Penalize wrong</label>
@@ -3208,6 +3695,8 @@ function readDrillSettings() {
     count: Math.round(clamp(+$("#dsCount").value || 20, 1, 200)),
     ansFmt: $("#dsAnsFmt") ? $("#dsAnsFmt").value : "type",
     skip: $("#dsSkip").value === "1",
+    retry: $("#dsRetry") ? $("#dsRetry").value === "1" : true,
+    adaptive: $("#dsAdapt") ? $("#dsAdapt").value === "1" : false,
     auto: $("#dsMove") ? $("#dsMove").value === "auto" : false,
     pen: $("#dsPen") ? $("#dsPen").value === "1" : false,
   };
@@ -3225,10 +3714,47 @@ function drillBestChips(gameId) {
 function runDrill(S) {
   Floor.stopAll();
   const timed = S.format === "time";
-  const queue = timed ? null : Array.from({ length: S.count }, () => S.gen());
+  /* Question sources, in priority order:
+       pending — skipped in count mode, comes straight back
+       fresh   — generated on demand (lazily, so the ladder can move mid-run)
+       retry   — missed once, re-served before the run can end
+     Timed runs have no fixed supply, so a retry is folded in every third
+     question instead of waiting for a queue that never empties. */
+  const pending = [], retry = [];
+  let made = 0, served = 0, retryAdded = 0;
   const results = [];
   let score = 0, correct = 0, wrong = 0, skipped = 0;
   let cur = null, penalized = false, answered = false, over = false;
+
+  /* Adaptive ladder: two right in a row moves up, one wrong moves down. Two
+     rather than three because a 2-minute sprint has to reach your real level
+     while there is still time left to test it. */
+  const ladder = (S.adaptive && S.ladder && S.ladder.length > 1) ? S.ladder : null;
+  let level = 0, streak = 0, levelPeak = 0;
+  const genOne = () => (ladder ? ladder[level].gen() : S.gen());
+  function levelUp() {
+    if (!ladder) return;
+    if (++streak >= 2 && level < ladder.length - 1) { level++; streak = 0; showLevel("up"); }
+    if (level > levelPeak) levelPeak = level;
+  }
+  function levelDown() {
+    if (!ladder) return;
+    streak = 0;
+    if (level > 0) { level--; showLevel("down"); }
+  }
+  function showLevel(dir) {
+    const el = $("#drLevel");
+    if (!el) return;
+    el.textContent = `${level + 1}/${ladder.length} · ${ladder[level].label}`;
+    el.classList.remove("lv-up", "lv-down");
+    void el.offsetWidth;                                  // restart the flash
+    el.classList.add(dir === "up" ? "lv-up" : "lv-down");
+  }
+  function noteMiss(q) {
+    if (!S.retry || !q || q.tries >= 1) return;            // one second look, not a loop
+    retry.push({ ...q, tries: (q.tries || 0) + 1, redo: true });
+    retryAdded++;
+  }
   const t0 = Date.now();
   const endT = t0 + S.seconds * 1000;
 
@@ -3245,6 +3771,8 @@ function runDrill(S) {
           <div class="stat-tile"><div class="k">Score</div><div class="v" id="drScore">0</div></div>
           <div class="stat-tile"><div class="k">Correct</div><div class="v" id="drRight">0</div></div>
           <div class="stat-tile"><div class="k">Wrong</div><div class="v" id="drWrong">0</div></div>
+          ${ladder ? `<div class="stat-tile"><div class="k">Level</div><div class="v" id="drLevel">1/${ladder.length} · ${esc(ladder[0].label)}</div></div>` : ""}
+          ${S.retry ? `<div class="stat-tile"><div class="k">Retry queue</div><div class="v" id="drRetry">0</div></div>` : ""}
         </div>
         <button class="btn sm ghost" id="drEnd">Finish now</button>
       </div>
@@ -3258,7 +3786,8 @@ function runDrill(S) {
   $("#drEnd").addEventListener("click", () => end());
 
   const scoreDisp = () => { $("#drScore").textContent = S.scored ? (Math.round(score * 10) / 10) : score;
-                           $("#drRight").textContent = correct; $("#drWrong").textContent = wrong; };
+                           $("#drRight").textContent = correct; $("#drWrong").textContent = wrong;
+                           const rq = $("#drRetry"); if (rq) rq.textContent = retry.length; };
   const tick = () => {
     if (over) return;
     if (timed) {
@@ -3267,7 +3796,7 @@ function runDrill(S) {
       $("#drTimer").classList.toggle("low", left < 10);
       if (left <= 0) end();
     } else {
-      $("#drTimer").textContent = `${results.length}/${S.count} · ${fmtClock((Date.now() - t0) / 1000)}`;
+      $("#drTimer").textContent = `${results.length}/${S.count + retryAdded} · ${fmtClock((Date.now() - t0) / 1000)}`;
     }
   };
   Floor.every(tick, 250);
@@ -3278,13 +3807,25 @@ function runDrill(S) {
   }
   const isRight = x => x !== null && Math.abs(x - cur.a) <= (cur.tol ?? Math.max(1e-9, Math.abs(cur.a) * 1e-9));
 
+  function pickNext() {
+    if (timed) {
+      served++;
+      if (retry.length && served % 3 === 0) return retry.shift();
+      return genOne();
+    }
+    if (pending.length) return pending.shift();           // skipped — come back to it
+    if (made < S.count) { made++; return genOne(); }
+    if (retry.length) return retry.shift();               // misses close out the run
+    return null;
+  }
+
   function next() {
     if (over) return;
     penalized = false; answered = false;
-    if (!timed && !queue.length) return end();
-    cur = timed ? S.gen() : queue.shift();
+    cur = pickNext();
+    if (!cur) return end();
     $("#drQ").innerHTML = cur.qh || esc(cur.q);
-    $("#drSub").textContent = cur.sub || "";
+    $("#drSub").textContent = (cur.redo ? "second look · " : "") + (cur.sub || "");
     $("#drFb").textContent = ""; $("#drFb").style.color = "";
     renderAnswer();
     renderCtl();
@@ -3299,12 +3840,14 @@ function runDrill(S) {
         if (answered || over) return;
         if (b.dataset.mc === cur.disp) {
           score++; correct++;
-          results.push({ q: cur.q, given: b.dataset.mc, ans: cur.disp, ok: true });
+          results.push({ q: cur.q, given: b.dataset.mc, ans: cur.disp, ok: true, redo: cur.redo });
+          levelUp();
           scoreDisp(); next();
         } else {
           wrong++;
           if (S.pen && !penalized) { score--; penalized = true; }
-          results.push({ q: cur.q, given: b.dataset.mc, ans: cur.disp, ok: false });
+          results.push({ q: cur.q, given: b.dataset.mc, ans: cur.disp, ok: false, redo: cur.redo });
+          noteMiss(cur); levelDown();
           b.classList.add("mc-bad");
           scoreDisp();
           Floor.after(() => next(), 350);
@@ -3333,14 +3876,15 @@ function runDrill(S) {
       if (over || answered) return;
       skipped++;
       if (timed) results.push({ q: cur.q, given: "(skipped)", ans: cur.disp, ok: false, skip: true });
-      else queue.push(cur);                        // come back to it later
+      else pending.push(cur);                      // come back to it later
       next();
     });
   }
 
   function onCorrect(raw) {
     score++; correct++;
-    results.push({ q: cur.q, given: raw.trim(), ans: cur.disp, ok: true });
+    results.push({ q: cur.q, given: raw.trim(), ans: cur.disp, ok: true, redo: cur.redo });
+    levelUp();
     scoreDisp(); next();
   }
 
@@ -3351,7 +3895,8 @@ function runDrill(S) {
     if (S.scored) {
       const s = Math.round(S.scoreFn(x, cur.a, cur) * 100) / 100;
       score += s; (s >= 0.9 ? correct++ : wrong++);
-      results.push({ q: cur.q, given: raw.trim(), ans: cur.disp, s });
+      if (s >= 0.9) levelUp(); else { noteMiss(cur); levelDown(); }
+      results.push({ q: cur.q, given: raw.trim(), ans: cur.disp, s, redo: cur.redo });
       answered = true;
       $("#drIn").disabled = true;
       $("#drFb").style.color = s >= 0.9 ? "var(--good)" : s > 0.4 ? "var(--warning)" : "var(--critical)";
@@ -3362,8 +3907,9 @@ function runDrill(S) {
     }
     if (isRight(x)) return onCorrect(raw);
     wrong++;
+    if (!penalized) { noteMiss(cur); levelDown(); }        // one miss per question, not per keystroke
     if (S.pen && !penalized) { score--; penalized = true; $("#drFb").textContent = "✗ −1 — keep trying or skip."; }
-    else $("#drFb").textContent = "✗ not it — keep trying" + (S.skip ? " or skip." : ".");
+    else { penalized = true; $("#drFb").textContent = "✗ not it — keep trying" + (S.skip ? " or skip." : "."); }
     $("#drFb").style.color = "var(--critical)";
     $("#drIn").classList.add("flash-bad");
     Floor.after(() => { const i = $("#drIn"); if (i) i.classList.remove("flash-bad"); }, 400);
@@ -3396,10 +3942,12 @@ function runDrill(S) {
           <div class="stat-tile"><div class="k">Skipped</div><div class="v">${skipped}</div></div>
           <div class="stat-tile"><div class="k">Accuracy</div><div class="v">${acc === null ? "—" : acc + "%"}</div></div>
           <div class="stat-tile"><div class="k">Pace</div><div class="v">${rate}/min</div></div>
+          ${ladder ? `<div class="stat-tile"><div class="k">Level reached</div><div class="v">${levelPeak + 1}/${ladder.length} · ${esc(ladder[levelPeak].label)}</div></div>` : ""}
+          ${retryAdded ? `<div class="stat-tile"><div class="k">Re-served</div><div class="v">${retryAdded - retry.length}/${retryAdded}</div></div>` : ""}
           <div class="stat-tile"><div class="k">Best (${esc(S.modeKey)})</div><div class="v">${state.drillBests[key].score}${isBest && prev ? " ★" : isBest ? " ★" : ""}</div></div>
         </div>
         ${results.length ? `<div class="mt16" style="max-height:260px; overflow-y:auto">
-          ${results.slice(0, 200).map(r => `<div class="rev-row">
+          ${results.slice(0, 200).map(r => `<div class="rev-row${r.redo ? " redo" : ""}">
             <span>${esc(r.q)}</span><span class="muted">${esc(String(r.given))}</span><span>${esc(String(r.ans))}</span>
             <span style="color:${r.skip ? "var(--warning)" : (r.ok || r.s >= 0.9) ? "var(--good)" : "var(--critical)"}">${r.skip ? "→" : r.s !== undefined ? r.s.toFixed(2) : r.ok ? "✓" : "✗"}</span>
           </div>`).join("")}</div>` : `<p class="small muted mt8">No questions answered.</p>`}
@@ -3491,6 +4039,28 @@ const MentalDrill = {
     set("opRoot", p.root); if (p.root) { $("#opRootMode").value = p.root[1]; set("opRootLo", p.root[2]); set("opRootHi", p.root[3]); }
   },
 
+  /* The DOM-free twin of applyPreset(): the adaptive ladder needs operation
+     mixes without a settings panel to read them out of. */
+  opsFromPreset(key) {
+    const p = this.PRESETS[key];
+    return {
+      add:  { on: !!p.add[0], lo: p.add[1], hi: p.add[2], nn: !!p.add[3] },
+      mul:  p.mul ? { on: true, lo: p.mul[1], hi: p.mul[2], dlo: p.mul[3], dhi: p.mul[4] }
+                  : { on: false, lo: 2, hi: 19, dlo: 2, dhi: 19 },
+      dec:  { on: !!p.dec, fancy: false },
+      frac: { on: !!p.frac },
+      pow:  p.pow ? { on: true, lo: p.pow[1], hi: p.pow[2] } : { on: false, lo: 2, hi: 20 },
+      root: p.root ? { on: true, mode: p.root[1], lo: p.root[2], hi: p.root[3] }
+                   : { on: false, mode: "int", lo: 2, hi: 40 },
+    };
+  },
+
+  LADDER: ["easy", "medium", "optiver", "hard", "akuna"],
+
+  buildLadder() {
+    return this.LADDER.map(k => ({ label: k, gen: this.buildGen(this.opsFromPreset(k)) }));
+  },
+
   launch(prev) {
     const cfg = prev || {
       mode: $("#mmMode").value,
@@ -3510,6 +4080,7 @@ const MentalDrill = {
       modeKey: cfg.mode, modeLabel: this.MODES[cfg.mode].label,
       format: cfg.format, seconds: cfg.seconds, count: cfg.count,
       ansFmt: cfg.ansFmt, skip: cfg.skip, auto: cfg.auto, pen: cfg.pen,
+      retry: cfg.retry, adaptive: cfg.adaptive, ladder: this.buildLadder(),
       gen: this.buildGen(cfg.ops),
       again: () => this.launch(cfg), settings: () => this.start(),
     });
@@ -3642,6 +4213,14 @@ const SeqDrill = {
     $("#sqStart").addEventListener("click", () => this.launch());
   },
 
+  LADDER: [
+    { label: "easy", pools: ["e"] },
+    { label: "easy+", pools: ["e", "m"] },
+    { label: "medium", pools: ["m"] },
+    { label: "medium+", pools: ["m", "h"] },
+    { label: "hard", pools: ["h"] },
+  ],
+
   launch(prev) {
     const cfg = prev || { mode: $("#sqMode").value, ...readDrillSettings() };
     const pools = this.MODES[cfg.mode].pools;
@@ -3650,6 +4229,8 @@ const SeqDrill = {
       modeKey: cfg.mode, modeLabel: this.MODES[cfg.mode].label,
       format: cfg.format, seconds: cfg.seconds, count: cfg.count,
       ansFmt: cfg.ansFmt, skip: cfg.skip, auto: cfg.auto, pen: cfg.pen,
+      retry: cfg.retry, adaptive: cfg.adaptive,
+      ladder: this.LADDER.map(l => ({ label: l.label, gen: () => this.makeQ(l.pools) })),
       gen: () => this.makeQ(pools),
       again: () => this.launch(cfg), settings: () => this.start(),
     });
@@ -3739,7 +4320,7 @@ const FermiDrill = {
             <select id="feMode">${Object.entries(this.MODES).map(([k, m]) =>
               `<option value="${k}">${m.label}</option>`).join("")}</select></div>
         </div>
-        ${drillSettingsHTML({ format: "time", min: 5, count: 10, noFmt: true, noMove: true })}
+        ${drillSettingsHTML({ format: "time", min: 5, count: 10, noFmt: true, noMove: true, noAdapt: true })}
         <div class="row mt16"><button class="btn primary" id="feStart">Start →</button></div>
         ${drillBestChips("fermi")}
       </div>`;
@@ -3755,7 +4336,7 @@ const FermiDrill = {
       modeKey: cfg.mode, modeLabel: this.MODES[cfg.mode].label,
       format: cfg.format, seconds: cfg.seconds, count: cfg.count,
       ansFmt: "type", skip: cfg.skip, auto: false, pen: false,
-      scored: true,
+      retry: cfg.retry, scored: true,
       scoreFn: (x, a, q) => {
         if (!(x > 0) || !(a > 0)) return x === a ? 1 : 0;
         return q.kind === "math"
@@ -3894,11 +4475,13 @@ const Floor = {
           <div class="g-icon">🎴</div><h3>High Show</h3>
           <p>A shuffled deck of N sequential cards from a hidden start K. Keep the best M — but rejecting cards costs you, under a penalty function you choose. Then estimate K and your own P&L before the reveal.</p>
           <div class="g-skills"><span class="badge">optimal stopping</span><span class="badge">inference</span><span class="badge">P&L tracking</span></div>
+          ${floorBestChips("hs", "game")}
         </div>
         <div class="game-card" data-game="bmr">
           <div class="g-icon">♠</div><h3>Black − Red</h3>
           <p>Poker-shaped market making: hole cards, a board that reveals street by street, and a contract on Σ black − Σ red across every card dealt. Quote each street; bots who know their own cards trade against you.</p>
           <div class="g-skills"><span class="badge">market making</span><span class="badge">card counting</span><span class="badge">adverse selection</span></div>
+          ${floorBestChips("br", "game")}
         </div>
       </div>
       <h2 class="mt24">Timed drills</h2>
@@ -3907,16 +4490,19 @@ const Floor = {
           <div class="g-icon">⚡</div><h3>Mental Math Sprint</h3>
           <p>The Optiver/Akuna front door: timed arithmetic with presets or a fully custom operation mix — decimals, fractions, powers, roots. Auto-advance or Enter-to-submit, optional −1 per miss.</p>
           <div class="g-skills"><span class="badge">speed</span><span class="badge">accuracy</span><span class="badge">80-in-8</span></div>
+          ${floorBestChips("mm", "drill")}
         </div>
         <div class="game-card" data-game="seq">
           <div class="g-icon">🔢</div><h3>Sequence Completion</h3>
           <p>Fill the blank in generated sequences — arithmetic through interleaved and recursive patterns, typed or multiple choice, against the clock.</p>
           <div class="g-skills"><span class="badge">pattern spotting</span><span class="badge">OA prep</span></div>
+          ${floorBestChips("seq", "drill")}
         </div>
         <div class="game-card" data-game="fest">
           <div class="g-icon">🧮</div><h3>Fermi Estimation</h3>
           <p>Rapid-fire estimation with partial credit: math questions scored on relative error, real-world questions on order of magnitude. Suffixes accepted — 4.2M, 1.5B.</p>
           <div class="g-skills"><span class="badge">estimation</span><span class="badge">Five Rings style</span></div>
+          ${floorBestChips("fermi", "drill")}
         </div>
       </div>`;
     $$("#view-floor .game-card").forEach(c => c.addEventListener("click", () => {
