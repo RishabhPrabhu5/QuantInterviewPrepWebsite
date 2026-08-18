@@ -1,6 +1,6 @@
 # DeskPrep — Quant Interview Prep
 
-A single-file quant trading interview trainer: **open `index.html` in any modern browser.** No server, no framework, no install, no build step required to *use* it. Question bank with graded answers, real Python running in the browser, and three simulated market-making games.
+A single-file quant trading interview trainer: **open `index.html` in any modern browser.** No server, no framework, no install, no build step required to *use* it. Question bank with graded answers, real Python running in the browser, five simulated market games, and three timed OA-style drills.
 
 Everything runs client-side. Progress persists to `localStorage`. The only network access is a CDN fetch of the Python runtime, and only when you click "Run tests."
 
@@ -50,11 +50,19 @@ Sits under every coding problem, in three escalating layers:
 3. **Optional conversational coaching** — connect your own Anthropic API key via the ⚙ panel for a Socratic coach that sees the problem, your current code, and your latest test failures. The key is held in page memory only, never persisted, and requests go directly from your browser to `api.anthropic.com`.
 
 ### Trading Floor
-Three bot-driven games, all with informed flow mixed into the order flow, so careless quotes get picked off exactly as they would onsite.
+Five bot-driven market games plus three timed drills. The market games all mix informed flow into the order flow, so careless quotes get picked off exactly as they would onsite.
 
 - **Dice market making** — quote two-sided on the sum of *n* hidden dice across three rounds with progressive reveals. ~35% of arriving bots have peeked. Settlement decomposes your P&L into *versus informed* and *versus noise*, which is the actual lesson.
 - **Vol curve fitting** — drag your mid-vol curve across strikes on a canvas. Some quotes are noisy, some are flat-out stale, and a true smile hides underneath. Then 20 orders hit you and you're marked to truth, minus $200 per no-arbitrage violation (negative butterfly, adjacent-strike cliff) — the same convexity and monotonicity checks a real vol fitter runs.
 - **Fermi market** — a live three-minute continuous limit order book on an estimation question, against 10 bots in five behavioral styles (informed, fundamental, anchored, momentum, noise) with per-style mean-reversion toward truth. Settles at the researched answer, with a derivation panel.
+- **High Show** — optimal stopping with teeth: a shuffled deck of N sequential cards from a hidden start K (K ≤ 3N); keep the best M, but rejections cost you under one of five penalty functions (none, flat, per-turn, per-value, turn×value — the per-turn default depends on the hidden K, so the running penalty itself is hidden). Ends with you estimating K and your own net P&L before the reveal; session PnL is your result minus the no-skill baseline, plus estimate bonuses.
+- **Black − Red** — poker-shaped market making. Everyone gets 2 hole cards, 5 board cards reveal pre-flop → flop → turn → river, and the contract settles to Σ black ranks − Σ red ranks over every card dealt (A=1 … K=13). You quote a two-sided market each street; bots — who each know their own hole cards — trade 1 lot against it. Endgame asks you to compute the true value and estimate your own PnL before settlement, and the settlement decomposes your PnL into punter flow vs sharper flow.
+
+Timed drills (shared engine: duration vs question-count formats, typing vs multiple choice, skips, Enter-to-submit vs auto-advance, optional −1 per wrong answer, per-mode best scores persisted):
+
+- **Mental Math Sprint** — Optiver/Akuna-style arithmetic with presets (easy → 80-in-8 style) or a fully custom operation mix: add/sub/mul/div with bounds, decimals (incl. leading-zero "fancy" mode), fractions with denominators ≤ 12, squares/cubes, and integer or 1-dp roots.
+- **Sequence Completion** — fill the blank in generated sequences across three difficulty pools (arithmetic/geometric/squares/Fibonacci-style up through interleaved, recursive, and factorial-step patterns), typed or multiple-choice.
+- **Fermi Estimation** — rapid-fire estimation with partial credit: math questions (big products, roots, powers, percentages) scored on relative error, real-world questions (a 40-entry bank) scored on order of magnitude; ≥ 0.9 counts as correct. Answers accept k/M/B/T suffixes.
 
 ### Progress
 Solved counts, first-try accuracy, per-topic skill scores (weakest first, since that's your study order), "Focus next" recommendations, the auto-collected review queue, a recent-activity log, and JSON export/import.
@@ -92,9 +100,13 @@ src/parts/
   p2_data.js          STAGES, TOPICS, QUESTIONS, FIRMS, FERMI_MARKETS
   p3_app.js           state, Store, tab router, answer checker, bank, Progress
   p4_coding.js        CODING_PROBLEMS, Pyodide Runtime, test harness, Coach, Coding UI
+  p5a_cards.js        HighShow, BlackRed (card games)
+  p5b_drills.js       runDrill engine, MentalDrill, SeqDrill, FermiDrill, REAL_FERMI
   p5_games.js         Floor hub, DiceGame, VolGame, FermiGame, boot
   p6_tail.html        closing tags
 ```
+
+`p5a`/`p5b` are concatenated **before** `p5_games.js`: p5 ends with the boot code, which must evaluate after every other declaration. Neither file may contain top-level executable statements.
 
 The split is by section, and the concatenation order is load order. `p1` opens `<style>`/`<body>`/`<script>`; `p2`–`p5` are the script body; `p6` closes the tags.
 
@@ -114,7 +126,8 @@ state = {
   qstats,       // qid -> { att, ok, first }   answer-checker outcomes
   codingStatus, // pid -> 'passed' | 'attempted'
   codingAtt,    // pid -> run count
-  history,      // [{ t, kind: 'q'|'code', id, ok }], capped
+  drillBests,   // "<drill>:<mode>" -> { score }       timed-drill records
+  history,      // [{ t, kind: 'q'|'code'|'drill', id, ok }], capped
   pnlTotal,     // cumulative trading-game P&L
   view, bankFilters
 }

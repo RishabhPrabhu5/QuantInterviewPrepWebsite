@@ -79,8 +79,10 @@ const Floor = {
     this.stopAll();
     $("#view-floor").innerHTML = `
       <h1>Trading Floor</h1>
-      <p class="lede">Simulated versions of the games real desks run in final rounds. Bots include informed flow —
-      if your quotes are careless, you <i>will</i> be picked off, just like onsite. PnL accumulates in the session tracker.</p>
+      <p class="lede">Simulated versions of the games real desks run in final rounds, plus the timed drills from the online
+      assessments. Bots include informed flow — if your quotes are careless, you <i>will</i> be picked off, just like onsite.
+      Game PnL accumulates in the session tracker; drills keep best scores per mode.</p>
+      <h2 class="mt24">Market games</h2>
       <div class="game-grid">
         <div class="game-card" data-game="dice">
           <div class="g-icon">🎲</div><h3>Dice Market Making</h3>
@@ -97,9 +99,38 @@ const Floor = {
           <p>A live 3-minute order book on an estimation question, against a crowd of bots — informed, anchored, momentum, noise. Settles at the researched answer.</p>
           <div class="g-skills"><span class="badge">estimation</span><span class="badge">order book</span><span class="badge">price discovery</span></div>
         </div>
+        <div class="game-card" data-game="hs">
+          <div class="g-icon">🎴</div><h3>High Show</h3>
+          <p>A shuffled deck of N sequential cards from a hidden start K. Keep the best M — but rejecting cards costs you, under a penalty function you choose. Then estimate K and your own P&L before the reveal.</p>
+          <div class="g-skills"><span class="badge">optimal stopping</span><span class="badge">inference</span><span class="badge">P&L tracking</span></div>
+        </div>
+        <div class="game-card" data-game="bmr">
+          <div class="g-icon">♠</div><h3>Black − Red</h3>
+          <p>Poker-shaped market making: hole cards, a board that reveals street by street, and a contract on Σ black − Σ red across every card dealt. Quote each street; bots who know their own cards trade against you.</p>
+          <div class="g-skills"><span class="badge">market making</span><span class="badge">card counting</span><span class="badge">adverse selection</span></div>
+        </div>
+      </div>
+      <h2 class="mt24">Timed drills</h2>
+      <div class="game-grid">
+        <div class="game-card" data-game="mm">
+          <div class="g-icon">⚡</div><h3>Mental Math Sprint</h3>
+          <p>The Optiver/Akuna front door: timed arithmetic with presets or a fully custom operation mix — decimals, fractions, powers, roots. Auto-advance or Enter-to-submit, optional −1 per miss.</p>
+          <div class="g-skills"><span class="badge">speed</span><span class="badge">accuracy</span><span class="badge">80-in-8</span></div>
+        </div>
+        <div class="game-card" data-game="seq">
+          <div class="g-icon">🔢</div><h3>Sequence Completion</h3>
+          <p>Fill the blank in generated sequences — arithmetic through interleaved and recursive patterns, typed or multiple choice, against the clock.</p>
+          <div class="g-skills"><span class="badge">pattern spotting</span><span class="badge">OA prep</span></div>
+        </div>
+        <div class="game-card" data-game="fest">
+          <div class="g-icon">🧮</div><h3>Fermi Estimation</h3>
+          <p>Rapid-fire estimation with partial credit: math questions scored on relative error, real-world questions on order of magnitude. Suffixes accepted — 4.2M, 1.5B.</p>
+          <div class="g-skills"><span class="badge">estimation</span><span class="badge">Five Rings style</span></div>
+        </div>
       </div>`;
     $$("#view-floor .game-card").forEach(c => c.addEventListener("click", () => {
-      ({ dice: DiceGame, vol: VolGame, fermi: FermiGame })[c.dataset.game].start();
+      ({ dice: DiceGame, vol: VolGame, fermi: FermiGame, hs: HighShow, bmr: BlackRed,
+         mm: MentalDrill, seq: SeqDrill, fest: FermiDrill })[c.dataset.game].start();
     }));
   },
   backBtn() { return `<button class="btn sm ghost" id="floorBack">← All games</button>`; },

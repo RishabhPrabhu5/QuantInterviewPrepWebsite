@@ -49,6 +49,7 @@ const state = {
   qstats: {},           // qid -> {att, ok, first}  (answer-check outcomes)
   codingStatus: {},     // pid -> 'passed' | 'attempted'
   codingAtt: {},        // pid -> run count
+  drillBests: {},       // "<drill>:<mode>" -> {score}   (timed drills, p5b)
   history: [],          // [{t, kind:'q'|'code', id, ok}]
   pnlTotal: 0,
   view: "roadmap",
@@ -63,7 +64,8 @@ const Store = {
     try {
       localStorage.setItem(this.KEY, JSON.stringify({
         ratings: state.ratings, qstats: state.qstats, codingStatus: state.codingStatus,
-        codingAtt: state.codingAtt, history: state.history.slice(-200), pnlTotal: state.pnlTotal,
+        codingAtt: state.codingAtt, drillBests: state.drillBests,
+        history: state.history.slice(-200), pnlTotal: state.pnlTotal,
         drafts: (typeof Coding !== "undefined") ? Coding.drafts : {},
       }));
     } catch (e) {}
@@ -77,6 +79,7 @@ const Store = {
       Object.assign(state.qstats, d.qstats || {});
       Object.assign(state.codingStatus, d.codingStatus || {});
       Object.assign(state.codingAtt, d.codingAtt || {});
+      Object.assign(state.drillBests, d.drillBests || {});
       state.history = d.history || [];
       state.pnlTotal = d.pnlTotal || 0;
       this._drafts = d.drafts || {};
@@ -85,7 +88,8 @@ const Store = {
   exportJson() {
     const blob = new Blob([JSON.stringify({
       ratings: state.ratings, qstats: state.qstats, codingStatus: state.codingStatus,
-      codingAtt: state.codingAtt, history: state.history, pnlTotal: state.pnlTotal,
+      codingAtt: state.codingAtt, drillBests: state.drillBests,
+      history: state.history, pnlTotal: state.pnlTotal,
       drafts: (typeof Coding !== "undefined") ? Coding.drafts : {}, exported: new Date().toISOString(),
     }, null, 1)], { type: "application/json" });
     const a = document.createElement("a");
@@ -103,6 +107,7 @@ const Store = {
         Object.assign(state.qstats, d.qstats || {});
         Object.assign(state.codingStatus, d.codingStatus || {});
         Object.assign(state.codingAtt, d.codingAtt || {});
+        Object.assign(state.drillBests, d.drillBests || {});
         state.history = d.history || state.history;
         state.pnlTotal = d.pnlTotal ?? state.pnlTotal;
         if (d.drafts && typeof Coding !== "undefined") Object.assign(Coding.drafts, d.drafts);
@@ -113,7 +118,7 @@ const Store = {
   },
   reset() {
     state.ratings = {}; state.qstats = {}; state.codingStatus = {}; state.codingAtt = {};
-    state.history = []; state.pnlTotal = 0;
+    state.drillBests = {}; state.history = []; state.pnlTotal = 0;
     if (typeof Coding !== "undefined") Coding.drafts = {};
     if (this.ok) try { localStorage.removeItem(this.KEY); } catch (e) {}
   },
@@ -599,7 +604,9 @@ function renderProgress() {
           <h3>Recent activity</h3>
           <div class="mt8">
             ${recent.length ? recent.map(h => {
-              const name = h.kind === "q" ? (QUESTIONS.find(q => q.id === h.id) || {}).title : (CODING_PROBLEMS.find(p => p.id === h.id) || {}).title;
+              const name = h.kind === "q" ? (QUESTIONS.find(q => q.id === h.id) || {}).title
+                : h.kind === "drill" ? ({ mm: "Mental math drill", seq: "Sequence drill", fermi: "Fermi drill" })[h.id]
+                : (CODING_PROBLEMS.find(p => p.id === h.id) || {}).title;
               return `<div class="act-row"><span class="when">${relTime(h.t)}</span><span style="color:${h.ok ? "var(--good)" : "var(--critical)"}">${h.ok ? "✓" : "✗"}</span><span>${esc(name || h.id)}</span></div>`;
             }).join("") : `<div class="muted small">Nothing yet.</div>`}
           </div>

@@ -21,7 +21,9 @@ A **single-file HTML app** (`index.html`) — no server, no framework, no build 
 | `p2_data.js` | `STAGES`, `TOPICS` (12), `QUESTIONS` (78), `FIRMS` (10 w/ topic weights), `FERMI_MARKETS` (10) |
 | `p3_app.js` | `state`, `Store` (persistence), tab router, roadmap, question bank + answer checker, Progress tab |
 | `p4_coding.js` | `CODING_PROBLEMS` (16), Pyodide `Runtime`, python test-harness builder, `Coach`, `Coding` UI |
-| `p5_games.js` | `Floor` hub + `DiceGame`, `VolGame`, `FermiGame`; boot code at the bottom |
+| `p5a_cards.js` | `HighShow`, `BlackRed` card games (concatenated before p5; declarations only) |
+| `p5b_drills.js` | `runDrill` engine + `MentalDrill`, `SeqDrill`, `FermiDrill`, `REAL_FERMI` bank |
+| `p5_games.js` | `Floor` hub + `DiceGame`, `VolGame`, `FermiGame`; boot code at the bottom — must stay last |
 | `p6_tail.html` | closing tags |
 
 ## Feature summary (v3, all working & browser-tested)
@@ -32,7 +34,7 @@ A **single-file HTML app** (`index.html`) — no server, no framework, no build 
    - *Algorithms* (10): warmups → HRT/Jump-hard (matching engine w/ price-time priority, running median two-heap, sliding-window max, trapping rain water, course-schedule cycle detection).
    - *Data & ML* (6): 3 warmups + 3 messy-data→prediction problems with preloaded deterministic datasets and MAE-based hidden grading bars (see "Data problem invariants").
    - *Desk Coach* under every problem: live lint as you type (python `compile()` when runtime loaded, bracket checks otherwise), 3 staged hints per problem, regex-checklist "Review my code", offline syntax KB chat; optional user-supplied Anthropic API key (⚙) for real conversational coaching — key held in page memory only, direct browser→api.anthropic.com calls with `anthropic-dangerous-direct-browser-access` header.
-4. **Trading Floor** — three all-bots games (deliberately deprioritized by Rishabh for now — don't invest here unless asked): dice-sum market making (progressive reveals, informed vs noise flow, markout breakdown), vol-curve fitting (draggable mids on canvas, hidden smile, stale quotes, smoothness/no-arb penalties), Fermi market (3-min live order book, 10 bots of 5 styles, settles at researched truth). PnL flows into a session tracker.
+4. **Trading Floor** — five market games + three timed drills (expanded Aug 2026 at Rishabh's request; the old "deprioritized" note no longer applies): dice-sum market making, vol-curve fitting, Fermi order-book market, High Show (optimal stopping w/ 5 penalty functions, hidden K estimated at the end), Black − Red (poker-shaped market making, bots trade your quotes street by street). Drills share `runDrill` in p5b (duration/count, typing/MC, skips, auto-advance, −1 penalties, per-mode bests in `state.drillBests`): Mental Math (presets incl. Optiver 80-in-8 style + custom ops), Sequences (3 difficulty pools), Fermi estimation (math scored on relative error, real-world on log10 ratio, ≥0.9 = correct). Game PnL flows into the session tracker.
 5. **Progress** — solved counts, first-try accuracy, per-topic skill scores (blend of checker results + self-ratings, weakest first) with drill buttons, "Focus next" recommendations, auto-collected review queue (misses + Again/Hard), recent activity log, JSON export/import, reset.
 6. **Persistence** — `Store` wraps localStorage (key `deskprep_progress_v1`) behind a feature-detect try/catch; falls back to in-memory (claude.ai artifact previews block storage — a banner in Progress explains). Coding drafts persist too.
 
@@ -41,7 +43,7 @@ A **single-file HTML app** (`index.html`) — no server, no framework, no build 
 - **Difficulty calibration**: Rishabh found standard difficulty labels inflated. Classics (ropes, Bayes test, coupon collector, 25 horses) are Easy/Medium for him. "Hard" must be *actually* hard (100 prisoners, ABRACADABRA, attenuation bias, orthant probabilities tier). Current mix: 38 easy / 29 medium / 11 hard.
 - **Coding bar**: HRT/Jump level. He wants problems that would appear in real screens, not toy warmups (warmups exist but are labeled as such).
 - **Data problems**: messy realistic data (mixed-case categoricals, sentinels like −1/0/−999, NaNs, duplicated rows) → clean → model → predict, graded on held-out MAE with thresholds that force real modeling (group means must fail the hidden bar).
-- **Trading floor**: keep as-is for now; he'll revisit later.
+- **Trading floor**: actively growing again (Aug 2026) — he asked for High Show, Black − Red, and the three drills. Match the existing informed-vs-noise decomposition style when adding games.
 - **Answer input**: he wants to type answers and get graded feedback, not just self-rate. Wrong answers must feed the review queue and skill tracking.
 
 ## Critical invariants (break these and grading breaks)
